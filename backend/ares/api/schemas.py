@@ -37,6 +37,7 @@ class AttackCategoryEnum(str, Enum):
 
 
 class TestRunStatusEnum(str, Enum):
+    __test__ = False
     idle      = "idle"
     queued    = "queued"
     running   = "running"
@@ -160,6 +161,7 @@ class ExecutionLogEvent(BaseModel):
 
 
 class TestRunResponse(BaseModel):
+    __test__ = False
     id:               str
     configuration:    ArenaTestConfig
     status:           TestRunStatusEnum

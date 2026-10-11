@@ -29,6 +29,9 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "integration: mark test as requiring live external API credentials",
+]
 
 [tool.ruff]
 line-length = 110
