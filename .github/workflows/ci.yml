@@ -31,21 +31,22 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
+        working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install -e backend
+          pip install -r requirements.txt
+          pip install -e .
 
       - name: Run pytest unit test suite
+        working-directory: backend
         env:
-          PYTHONPATH: backend
           DATABASE_URL: "sqlite:///./test-orchestrator.db"
           GROQ_API_KEY: "mock-groq-key"
           GEMINI_API_KEY: "mock-gemini-key"
           NVIDIA_API_KEY: "mock-nvidia-key"
           QDRANT_HOST: ":memory:"
         run: |
-          pytest backend -m "not integration" -v --durations=10
+          pytest -m "not integration" -v --durations=10
 
   frontend-tests:
     name: Frontend Tests (.NET 8.0)
