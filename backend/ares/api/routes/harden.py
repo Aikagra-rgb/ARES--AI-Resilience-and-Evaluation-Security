@@ -20,12 +20,17 @@ async def harden_prompt(request: HardenRequest) -> HardenResponse:
     """Run the ARES Prompt Optimizer and return the hardened, token-efficient system prompt."""
     try:
         optimizer = PromptOptimizer(settings=settings)
-        result = await optimizer.optimize(
-            system_prompt=request.system_prompt,
-            application_name=request.application_name,
-            domain=request.domain,
-            test_id=request.test_id,
-            optimize_tokens=request.optimize_tokens,
+        # Apply a 12-second budget for live LLM multi-step synthesis.
+        # If external provider queues or takes too long, fall back to instant zero-trust synthesis.
+        result = await asyncio.wait_for(
+            optimizer.optimize(
+                system_prompt=request.system_prompt,
+                application_name=request.application_name,
+                domain=request.domain,
+                test_id=request.test_id,
+                optimize_tokens=request.optimize_tokens,
+            ),
+            timeout=12.0,
         )
         baseline = int(getattr(result, "baseline_robustness", 20.0))
         hardened = int(getattr(result, "hardened_robustness", 95.0))
