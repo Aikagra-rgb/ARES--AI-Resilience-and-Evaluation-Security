@@ -44,7 +44,10 @@ jobs:
           GROQ_API_KEY: "mock-groq-key"
           GEMINI_API_KEY: "mock-gemini-key"
           NVIDIA_API_KEY: "mock-nvidia-key"
+          QDRANT_URL: ":memory:"
           QDRANT_HOST: ":memory:"
+          ARES_API_KEY: "ares-dev-secret-key-42"
+          ENVIRONMENT: "test"
         run: |
           pytest -m "not integration" -v --durations=10
 
