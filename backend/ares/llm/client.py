@@ -76,6 +76,12 @@ class LLMClient:
                 "ollama",
                 self.settings.ollama_default_model,
             )
+        elif provider == LLMProvider.OPENAI:
+            return (
+                self.settings.openai_base_url.rstrip("/"),
+                self.settings.openai_api_key,
+                self.settings.openai_default_model,
+            )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 

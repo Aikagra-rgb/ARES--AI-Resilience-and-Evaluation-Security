@@ -337,7 +337,7 @@ class RedTeamAttacker:
         ).hexdigest()[:16]
 
         if not config.hidden_secret:
-            config.hidden_secret = f"CANARY_{secrets.token_hex(6).upper()}"
+            config.hidden_secret = f"CANARY_{secrets.token_hex(32).upper()}"
 
         domain = self.detect_target_domain(config.target_prompt)
         logger.info("Target domain detected: %s (mode=%s)", domain, config.mode)

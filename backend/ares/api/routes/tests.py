@@ -58,7 +58,7 @@ _PROVIDER_MAP: Dict[AiProviderEnum, str] = {
     AiProviderEnum.gemini:     "gemini",
     AiProviderEnum.nvidia_nim: "nvidia",
     AiProviderEnum.ollama:     "ollama",
-    AiProviderEnum.openai:     "groq",   # fallback
+    AiProviderEnum.openai:     "openai",
 }
 
 
@@ -453,8 +453,8 @@ async def create_and_run_test(request: CreateTestRequest) -> TestRunResponse:
             failure_reason=str(exc)[:200],
         )
 
-    _test_store[test_id] = run
     _persist_test_run(run)
+    _test_store[test_id] = run
     return run
 
 
@@ -511,14 +511,14 @@ async def get_recent_tests() -> List[RecentTestItem]:
 
 @router.get("/{test_id}", response_model=TestRunResponse)
 async def get_test(test_id: str) -> TestRunResponse:
-    """Fetch a specific test run by ID."""
-    if test_id in _test_store:
-        return _test_store[test_id]
-
+    """Fetch a specific test run by ID (DB primary, in-memory cache secondary)."""
     db_run = _load_test_run_from_db(test_id)
     if db_run:
         _test_store[test_id] = db_run
         return db_run
+
+    if test_id in _test_store:
+        return _test_store[test_id]
 
     raise HTTPException(status_code=404, detail=f"Test '{test_id}' not found.")
 
