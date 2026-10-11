@@ -340,8 +340,8 @@ async def test_prompt_optimizer_fallback_on_llm_failure():
 
     result = await optimizer.harden_prompt(config)
 
-    # NVIDIA, then Gemini, then Groq should all be attempted before programmatic wrap
-    assert mock_llm.complete.await_count == 3
+    # NVIDIA, then Gemini, then Groq, then Ollama should all be attempted before programmatic wrap
+    assert mock_llm.complete.await_count == 4
     assert result.hardened_robustness == 90.0
     assert "--- SECURITY ENFORCEMENT PROTOCOL ---" in result.hardened_prompt
     assert result.is_hardened_sufficiently is True

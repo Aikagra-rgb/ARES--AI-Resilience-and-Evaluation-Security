@@ -658,7 +658,10 @@ def hardening_comparison(user: CurrentUser = Depends(get_current_user), db: Sess
 
 @app.get("/api/v1/providers/health", dependencies=[Depends(get_current_user)])
 def provider_health() -> dict:
+    now = datetime.now(timezone.utc)
     openai_configured = orchestrator._provider_is_configured("OpenAI")
+    groq_configured = orchestrator._provider_is_configured("Groq")
+    ollama_configured = orchestrator._provider_is_configured("Ollama")
     return {
         "items": [
             {
@@ -668,27 +671,64 @@ def provider_health() -> dict:
                 "detail": "Server-side Responses adapter configured."
                 if openai_configured
                 else "Server-side credential is not configured.",
-                "checked_at": datetime.now(timezone.utc),
-            }
+                "checked_at": now,
+            },
+            {
+                "provider": "Groq",
+                "name": "Groq",
+                "status": "Operational" if groq_configured else "NotConfigured",
+                "detail": "High-speed LPU inference adapter configured."
+                if groq_configured
+                else "GROQ_API_KEY is not configured.",
+                "checked_at": now,
+            },
+            {
+                "provider": "Ollama",
+                "name": "Ollama (Local GPU)",
+                "status": "Operational" if ollama_configured else "NotConfigured",
+                "detail": f"Local GPU daemon configured at {settings.ollama_base_url}."
+                if ollama_configured
+                else "Local Ollama daemon is not configured.",
+                "checked_at": now,
+            },
         ]
     }
 
 
 @app.get("/api/v1/models", dependencies=[Depends(get_current_user)])
 def models(provider: str) -> dict:
-    if provider != "OpenAI":
-        return {"items": []}
-    return {
-        "items": [
-            {
-                "provider": "OpenAI",
-                "id": "gpt-4.1-mini",
-                "display_name": "GPT-4.1 mini",
-                "context_window": 128000,
-                "is_available": orchestrator._provider_is_configured("OpenAI"),
-            }
+    p_norm = provider.lower().replace("_", "")
+    items = []
+    if p_norm in ("openai", "open_ai"):
+        items = [
+            {"provider": "OpenAI", "id": "gpt-4.1-mini", "display_name": "GPT-4.1 mini", "context_window": 128000, "is_available": orchestrator._provider_is_configured("OpenAI")},
+            {"provider": "OpenAI", "id": "gpt-4o-mini", "display_name": "GPT-4o mini", "context_window": 128000, "is_available": orchestrator._provider_is_configured("OpenAI")},
         ]
-    }
+    elif p_norm == "groq":
+        is_avail = orchestrator._provider_is_configured("Groq")
+        items = [
+            {"provider": "Groq", "id": "llama-3.1-8b-instant", "display_name": "Llama 3.1 8B Instant", "context_window": 128000, "is_available": is_avail},
+            {"provider": "Groq", "id": "llama-3.1-70b-versatile", "display_name": "Llama 3.1 70B Versatile", "context_window": 128000, "is_available": is_avail},
+            {"provider": "Groq", "id": "mixtral-8x7b-32768", "display_name": "Mixtral 8×7B", "context_window": 32768, "is_available": is_avail},
+        ]
+    elif p_norm in ("ollama", "local"):
+        is_avail = orchestrator._provider_is_configured("Ollama")
+        items = [
+            {"provider": "Ollama", "id": "llama3.1:8b", "display_name": "Llama 3.1 8B (Local RTX)", "context_window": 128000, "is_available": is_avail},
+            {"provider": "Ollama", "id": "mistral:latest", "display_name": "Mistral 7B (Local RTX)", "context_window": 32768, "is_available": is_avail},
+            {"provider": "Ollama", "id": "qwen2.5:7b", "display_name": "Qwen 2.5 7B (Local RTX)", "context_window": 128000, "is_available": is_avail},
+            {"provider": "Ollama", "id": "deepseek-r1:8b", "display_name": "DeepSeek R1 8B (Local Reasoning)", "context_window": 65536, "is_available": is_avail},
+        ]
+    elif p_norm == "gemini":
+        items = [
+            {"provider": "Gemini", "id": "gemini-2.0-flash", "display_name": "Gemini 2.0 Flash", "context_window": 1048576, "is_available": bool(settings.gemini_api_key)},
+        ]
+    elif p_norm in ("nvidianim", "nvidia"):
+        items = [
+            {"provider": "NvidiaNim", "id": "nvidia/nemotron-4-340b-instruct", "display_name": "Nemotron 4 340B", "context_window": 4096, "is_available": True},
+            {"provider": "NvidiaNim", "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "display_name": "Nemotron 3 Nano Omni 30B", "context_window": 32768, "is_available": True},
+        ]
+    return {"items": items}
 
 
 def arena_progress(user: CurrentUser, db: Session) -> list[dict]:

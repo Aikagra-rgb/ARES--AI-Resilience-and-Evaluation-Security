@@ -18,7 +18,9 @@ public static class MockData
         new(AiProvider.Gemini, "gemini-2.5-pro", "Gemini 2.5 Pro", 1048576, true),
         new(AiProvider.NvidiaNim, "meta/llama-3.1-70b-instruct", "Llama 3.1 70B via NIM", 131072, false),
         new(AiProvider.Ollama, "llama3.1:8b", "Llama 3.1 8B (Local RTX)", 128000, true),
-        new(AiProvider.Ollama, "mistral:latest", "Mistral 7B (Local RTX)", 32768, true)
+        new(AiProvider.Ollama, "mistral:latest", "Mistral 7B (Local RTX)", 32768, true),
+        new(AiProvider.Ollama, "qwen2.5:7b", "Qwen 2.5 7B (Local RTX)", 128000, true),
+        new(AiProvider.Ollama, "deepseek-r1:8b", "DeepSeek R1 8B (Local Reasoning)", 65536, true)
     ];
 
     public static DashboardSummary DashboardSummary() => new(

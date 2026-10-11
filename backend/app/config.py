@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     qdrant_api_key: SecretStr | None = None
     run_worker: bool = True
     provider_timeout_seconds: float = 60
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_default_model: str = "llama3.1:8b"
     cors_origins: str = "http://localhost:5000,https://localhost:5001,http://localhost:5149,https://localhost:7149,http://localhost:5180,https://localhost:7180"
 
     @property

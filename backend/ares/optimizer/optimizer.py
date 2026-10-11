@@ -37,8 +37,8 @@ from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
-# Phase 4 hardener fallback: Nemotron first, then Gemini, then Groq.
-_HARDENER_FALLBACK_ORDER = (LLMProvider.NVIDIA, LLMProvider.GEMINI, LLMProvider.GROQ)
+# Phase 4 hardener fallback: Nemotron first, then Gemini, then Groq, then local Ollama.
+_HARDENER_FALLBACK_ORDER = (LLMProvider.NVIDIA, LLMProvider.GEMINI, LLMProvider.GROQ, LLMProvider.OLLAMA)
 
 
 _HARDENER_SYSTEM_PROMPT = """\
