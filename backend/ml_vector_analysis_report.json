@@ -1,157 +1,157 @@
 {
-  "generated_at": "2026-10-07T17:35:17.358182+00:00",
-  "sample_count": 3695,
+  "generated_at": "2026-10-11T12:20:34.422778+00:00",
+  "sample_count": 3755,
   "vector_dim": 768,
-  "pairwise_similarity_mean": 0.07629942893981934,
-  "pairwise_similarity_std": 0.14612126350402832,
+  "pairwise_similarity_mean": 0.0752636194229126,
+  "pairwise_similarity_std": 0.14678718149662018,
   "pca_top_3_variance": [
-    0.1093292310833931,
-    0.037103038281202316,
-    0.03177926689386368
+    0.11471862345933914,
+    0.036549873650074005,
+    0.031317297369241714
   ],
-  "pca_cumulative_variance_top_5": 0.23167094588279724,
-  "silhouette_score": 0.0324,
+  "pca_cumulative_variance_top_5": 0.23526974022388458,
+  "silhouette_score": 0.0319,
   "category_counts": {
-    "instruction_override": 888,
-    "role_play_hijack": 997,
-    "context_smuggling": 458,
-    "encoding_tricks": 630,
-    "delimiter_confusion": 722
+    "instruction_override": 900,
+    "role_play_hijack": 1009,
+    "context_smuggling": 470,
+    "encoding_tricks": 642,
+    "delimiter_confusion": 734
   },
-  "classifier_name": "LogisticRegression(C=5, balanced) | TF-IDF(word1-2+char3-5, 800feat) + 15-Structural | CV=98.8% (+-0.3%)",
-  "cv_mean_accuracy": 0.988362652232747,
-  "cv_std_accuracy": 0.0032701071647075965,
+  "classifier_name": "ComplementNB(alpha=0.5) | TF-IDF(word1-2+char3-5, 800feat) + 15-Structural | CV=94.4% (+-2.7%)",
+  "cv_mean_accuracy": 0.943903201513899,
+  "cv_std_accuracy": 0.026982231755556824,
   "classification_report": {
     "context_smuggling": {
-      "precision": 0.9404517453798767,
-      "recall": 1.0,
-      "f1-score": 0.9693121693121693,
-      "support": 458.0
+      "precision": 0.9563318777292577,
+      "recall": 0.9319148936170213,
+      "f1-score": 0.9439655172413793,
+      "support": 470.0
     },
     "delimiter_confusion": {
-      "precision": 1.0,
-      "recall": 0.9903047091412742,
-      "f1-score": 0.9951287404314544,
-      "support": 722.0
+      "precision": 0.9231754161331626,
+      "recall": 0.9822888283378747,
+      "f1-score": 0.9518151815181518,
+      "support": 734.0
     },
     "encoding_tricks": {
-      "precision": 1.0,
-      "recall": 0.9888888888888889,
-      "f1-score": 0.994413407821229,
-      "support": 630.0
+      "precision": 0.931637519872814,
+      "recall": 0.9127725856697819,
+      "f1-score": 0.9221085759244689,
+      "support": 642.0
     },
     "instruction_override": {
-      "precision": 1.0,
-      "recall": 0.9898648648648649,
-      "f1-score": 0.9949066213921901,
-      "support": 888.0
+      "precision": 0.9609644087256027,
+      "recall": 0.93,
+      "f1-score": 0.9452286843591191,
+      "support": 900.0
     },
     "role_play_hijack": {
-      "precision": 0.9989909182643795,
-      "recall": 0.9929789368104313,
-      "f1-score": 0.9959758551307847,
-      "support": 997.0
+      "precision": 0.969488188976378,
+      "recall": 0.9762140733399405,
+      "f1-score": 0.9728395061728395,
+      "support": 1009.0
     },
-    "accuracy": 0.9918809201623816,
+    "accuracy": 0.9499334221038616,
     "macro avg": {
-      "precision": 0.9878885327288514,
-      "recall": 0.9924074799410919,
-      "f1-score": 0.9899473588175655,
-      "support": 3695.0
+      "precision": 0.9483194822874431,
+      "recall": 0.9466380761929237,
+      "f1-score": 0.9471914930431916,
+      "support": 3755.0
     },
     "weighted avg": {
-      "precision": 0.9923466427316833,
-      "recall": 0.9918809201623816,
-      "f1-score": 0.9919819698039282,
-      "support": 3695.0
+      "precision": 0.950274188086031,
+      "recall": 0.9499334221038616,
+      "f1-score": 0.949824426027399,
+      "support": 3755.0
     }
   },
   "confusion_matrix": [
     [
-      458,
-      0,
-      0,
-      0,
-      0
+      438,
+      10,
+      11,
+      3,
+      8
     ],
     [
-      7,
-      715,
-      0,
-      0,
-      0
-    ],
-    [
-      7,
-      0,
-      623,
+      2,
+      721,
+      11,
       0,
       0
     ],
     [
       8,
-      0,
-      0,
-      879,
-      1
+      17,
+      586,
+      31,
+      0
     ],
     [
+      4,
+      26,
+      10,
+      837,
+      23
+    ],
+    [
+      6,
       7,
+      11,
       0,
-      0,
-      0,
-      990
+      985
     ]
   ],
   "vector_stats": {
-    "total_vectors": 3695,
-    "sample_count": 3695,
+    "total_vectors": 3755,
+    "sample_count": 3755,
     "vector_dim": 768,
     "category_distribution": {
-      "instruction_override": 888,
-      "role_play_hijack": 997,
-      "context_smuggling": 458,
-      "encoding_tricks": 630,
-      "delimiter_confusion": 722
+      "instruction_override": 900,
+      "role_play_hijack": 1009,
+      "context_smuggling": 470,
+      "encoding_tricks": 642,
+      "delimiter_confusion": 734
     },
-    "pairwise_similarity_mean": 0.07629942893981934,
-    "pairwise_similarity_std": 0.14612126350402832,
+    "pairwise_similarity_mean": 0.0752636194229126,
+    "pairwise_similarity_std": 0.14678718149662018,
     "pca_top_3_variance": [
-      0.1093292310833931,
-      0.037103038281202316,
-      0.03177926689386368
+      0.11471862345933914,
+      0.036549873650074005,
+      0.031317297369241714
     ],
-    "pca_cumulative_variance_top_5": 0.23167094588279724,
-    "silhouette_score": 0.0324
+    "pca_cumulative_variance_top_5": 0.23526974022388458,
+    "silhouette_score": 0.0319
   },
   "feature_stats": {
-    "length_mean": 140.8982408660352,
-    "length_std": 98.92349354280455,
+    "length_mean": 147.34141145139813,
+    "length_std": 158.8255969791942,
     "length_median": 134.0,
     "length_min": 38,
-    "length_max": 2571,
+    "length_max": 2572,
     "category_counts": {
-      "instruction_override": 888,
-      "role_play_hijack": 997,
-      "context_smuggling": 458,
-      "encoding_tricks": 630,
-      "delimiter_confusion": 722
+      "instruction_override": 900,
+      "role_play_hijack": 1009,
+      "context_smuggling": 470,
+      "encoding_tricks": 642,
+      "delimiter_confusion": 734
     },
     "provider_counts": {
       "unknown": 3650,
-      "groq": 40,
+      "groq": 100,
       "nvidia": 5
     },
     "operator_counts": {
-      "none": 3517,
-      "fake_json": 20,
+      "none": 3547,
+      "fake_json": 50,
       "leetspeak": 158
     }
   },
   "model_performance": {
-    "model_name": "LogisticRegression(C=5, balanced) | TF-IDF(word1-2+char3-5, 800feat) + 15-Structural | CV=98.8% (+-0.3%)",
-    "cv_mean_accuracy": 0.988362652232747,
-    "cv_std_accuracy": 0.0032701071647075965,
+    "model_name": "ComplementNB(alpha=0.5) | TF-IDF(word1-2+char3-5, 800feat) + 15-Structural | CV=94.4% (+-2.7%)",
+    "cv_mean_accuracy": 0.943903201513899,
+    "cv_std_accuracy": 0.026982231755556824,
     "classes": [
       "context_smuggling",
       "delimiter_confusion",
@@ -161,84 +161,84 @@
     ],
     "classification_report": {
       "context_smuggling": {
-        "precision": 0.9404517453798767,
-        "recall": 1.0,
-        "f1-score": 0.9693121693121693,
-        "support": 458.0
+        "precision": 0.9563318777292577,
+        "recall": 0.9319148936170213,
+        "f1-score": 0.9439655172413793,
+        "support": 470.0
       },
       "delimiter_confusion": {
-        "precision": 1.0,
-        "recall": 0.9903047091412742,
-        "f1-score": 0.9951287404314544,
-        "support": 722.0
+        "precision": 0.9231754161331626,
+        "recall": 0.9822888283378747,
+        "f1-score": 0.9518151815181518,
+        "support": 734.0
       },
       "encoding_tricks": {
-        "precision": 1.0,
-        "recall": 0.9888888888888889,
-        "f1-score": 0.994413407821229,
-        "support": 630.0
+        "precision": 0.931637519872814,
+        "recall": 0.9127725856697819,
+        "f1-score": 0.9221085759244689,
+        "support": 642.0
       },
       "instruction_override": {
-        "precision": 1.0,
-        "recall": 0.9898648648648649,
-        "f1-score": 0.9949066213921901,
-        "support": 888.0
+        "precision": 0.9609644087256027,
+        "recall": 0.93,
+        "f1-score": 0.9452286843591191,
+        "support": 900.0
       },
       "role_play_hijack": {
-        "precision": 0.9989909182643795,
-        "recall": 0.9929789368104313,
-        "f1-score": 0.9959758551307847,
-        "support": 997.0
+        "precision": 0.969488188976378,
+        "recall": 0.9762140733399405,
+        "f1-score": 0.9728395061728395,
+        "support": 1009.0
       },
-      "accuracy": 0.9918809201623816,
+      "accuracy": 0.9499334221038616,
       "macro avg": {
-        "precision": 0.9878885327288514,
-        "recall": 0.9924074799410919,
-        "f1-score": 0.9899473588175655,
-        "support": 3695.0
+        "precision": 0.9483194822874431,
+        "recall": 0.9466380761929237,
+        "f1-score": 0.9471914930431916,
+        "support": 3755.0
       },
       "weighted avg": {
-        "precision": 0.9923466427316833,
-        "recall": 0.9918809201623816,
-        "f1-score": 0.9919819698039282,
-        "support": 3695.0
+        "precision": 0.950274188086031,
+        "recall": 0.9499334221038616,
+        "f1-score": 0.949824426027399,
+        "support": 3755.0
       }
     },
     "confusion_matrix": [
       [
-        458,
-        0,
-        0,
-        0,
-        0
+        438,
+        10,
+        11,
+        3,
+        8
       ],
       [
-        7,
-        715,
-        0,
-        0,
-        0
-      ],
-      [
-        7,
-        0,
-        623,
+        2,
+        721,
+        11,
         0,
         0
       ],
       [
         8,
-        0,
-        0,
-        879,
-        1
+        17,
+        586,
+        31,
+        0
       ],
       [
+        4,
+        26,
+        10,
+        837,
+        23
+      ],
+      [
+        6,
         7,
+        11,
         0,
-        0,
-        0,
-        990
+        985
       ]
     ]
   }

@@ -67,7 +67,7 @@ class TestPromptRobustnessEvaluator:
         assert report.overall_robustness_score == 100.0
         assert report.risk_severity == RiskSeverity.MINIMAL
         assert report.is_resilient is True
-        assert report.qdrant_points_indexed == 5
+        assert report.qdrant_points_indexed == 0
         assert "ARES PROMPT ROBUSTNESS EVALUATION REPORT" in report.summary_table()
 
     @pytest.mark.asyncio
@@ -91,6 +91,7 @@ class TestPromptRobustnessEvaluator:
         mock_attacker.run = AsyncMock(side_effect=mock_run)
 
         mock_store = AsyncMock(spec=QdrantStore)
+        mock_store.search_similar_attacks.return_value = []
         mock_store.upsert_attempts_batch.return_value = 5
 
         evaluator = PromptRobustnessEvaluator(attacker=mock_attacker, store=mock_store)

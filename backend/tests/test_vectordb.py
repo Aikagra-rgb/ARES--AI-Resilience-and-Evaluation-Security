@@ -35,7 +35,7 @@ class TestGeminiEmbedder:
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_resp
 
-        settings = Settings(gemini_api_key="mock-key", qdrant_vector_size=768)
+        settings = Settings(gemini_api_key="mock-key", qdrant_vector_size=768, prefer_local_embeddings=False)
         embedder = GeminiEmbedder(settings=settings, http_client=mock_client)
 
         vec = await embedder.embed_text("Test attack string")
@@ -52,7 +52,7 @@ class TestGeminiEmbedder:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "embedding": [0.1, 0.2] * 384
+            "embeddings": [[0.1, 0.2] * 384]
         }
 
         mock_client = AsyncMock()
@@ -67,7 +67,7 @@ class TestGeminiEmbedder:
         assert vec[0] == 0.1
         mock_client.post.assert_called_once()
         call_url = mock_client.post.call_args[0][0]
-        assert "api/embeddings" in call_url
+        assert "api/embed" in call_url
 
     @pytest.mark.asyncio
     async def test_embed_empty_text_raises_error(self):
@@ -125,7 +125,7 @@ class TestGeminiEmbedder:
 
     @pytest.mark.asyncio
     async def test_embed_missing_api_key_raises(self):
-        settings = Settings(gemini_api_key="")
+        settings = Settings(gemini_api_key="", prefer_local_embeddings=False)
         embedder = GeminiEmbedder(settings=settings)
 
         with pytest.raises(EmbeddingError, match="GEMINI_API_KEY is not configured"):

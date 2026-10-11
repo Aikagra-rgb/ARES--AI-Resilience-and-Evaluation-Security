@@ -84,15 +84,37 @@ class PromptRobustnessEvaluator:
             result = await self.attacker.run(config)
             all_attempts.extend(result.attempts)
 
-        # Index attempts into Qdrant Cloud
+        # Index attempts into Qdrant Cloud - only index verified successful breaches (prevent corpus pollution)
         points_indexed = 0
         if auto_index_to_qdrant and all_attempts:
             try:
-                points_indexed = await self.store.upsert_attempts_batch(
-                    attempts=all_attempts,
-                    target_prompt_hash=target_hash,
-                )
-                logger.info("Successfully indexed %d attack vectors into Qdrant.", points_indexed)
+                successful_attempts = [a for a in all_attempts if a.success]
+                if successful_attempts:
+                    novel_attempts = []
+                    for att in successful_attempts:
+                        try:
+                            sims = await self.store.search_similar_attacks(
+                                query_text=att.attack_text,
+                                limit=1,
+                                score_threshold=0.85,
+                            )
+                            if not sims:
+                                novel_attempts.append(att)
+                            else:
+                                logger.debug("Skipping duplicate breach (similarity >= 0.85): %s", att.attack_text[:60])
+                        except Exception:
+                            novel_attempts.append(att)
+
+                    if novel_attempts:
+                        points_indexed = await self.store.upsert_attempts_batch(
+                            attempts=novel_attempts,
+                            target_prompt_hash=target_hash,
+                        )
+                        logger.info("Successfully indexed %d novel verified breach vectors into Qdrant.", points_indexed)
+                    else:
+                        logger.info("All successful breaches already match existing corpus patterns (similarity >= 0.85).")
+                else:
+                    logger.info("No successful breaches detected; skipping Qdrant indexing to prevent corpus pollution.")
             except Exception as exc:
                 logger.warning("Failed to index attack vectors to Qdrant: %s", exc)
 

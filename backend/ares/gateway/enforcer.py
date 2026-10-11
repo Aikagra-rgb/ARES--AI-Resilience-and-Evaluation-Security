@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from ares.api.schemas import (
     EnforceActionEnum,
     EnforceRequest,
@@ -55,6 +57,12 @@ class RuntimeEnforcer:
     ):
         self.settings = settings or default_settings
         self.store = store or QdrantStore(settings=self.settings)
+        try:
+            from ares.evaluation.ml_stats import AttackClassifierBundle
+            self._ml_classifier = AttackClassifierBundle.load()
+        except Exception:
+            self._ml_classifier = None
+        self._benign_vectors: Optional[np.ndarray] = None
 
     def _inspect_heuristics(self, text: str) -> Tuple[bool, Optional[str], int, str]:
         """
@@ -106,6 +114,72 @@ class RuntimeEnforcer:
             logger.warning("Gateway vector similarity search failed: %s", exc)
 
         return (0.0, None, None)
+
+    def _inspect_ml_classifier(self, text: str) -> Tuple[bool, Optional[str], float, str]:
+        """
+        Fast Layer-1.5 ML Classifier inspection (<1ms).
+        Returns: (triggered, predicted_category, confidence, explanation)
+        """
+        if self._ml_classifier is None:
+            return (False, None, 0.0, "ML classifier not active.")
+        try:
+            cat, conf = self._ml_classifier.predict(text)
+            if conf >= 0.70:
+                return (
+                    True,
+                    cat,
+                    conf,
+                    f"Tier 1 ML Classifier detected '{cat}' intent ({conf*100:.1f}% confidence).",
+                )
+            return (False, cat, conf, f"Tier 1 ML Classifier: category '{cat}' below trigger threshold ({conf*100:.1f}%).")
+        except Exception as exc:
+            logger.debug("ML classifier inference failed: %s", exc)
+            return (False, None, 0.0, f"ML classifier error: {exc}")
+
+    async def _get_benign_vectors(self) -> Optional[np.ndarray]:
+        """Lazy load and embed the benign reference prompt corpus."""
+        if self._benign_vectors is not None:
+            return self._benign_vectors
+
+        try:
+            from ares.gateway.benign_corpus import BENIGN_REFERENCE_PROMPTS
+            vecs = await self.store.embedder.embed_batch(BENIGN_REFERENCE_PROMPTS[:25])
+            if vecs:
+                mat = np.array(vecs, dtype=np.float32)
+                norms = np.linalg.norm(mat, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                self._benign_vectors = mat / norms
+                return self._benign_vectors
+        except Exception as exc:
+            logger.debug("Benign corpus embedding unavailable: %s", exc)
+        return None
+
+    async def _compute_benign_contrast(
+        self,
+        text: str,
+        attack_similarity: float,
+    ) -> Tuple[float, float]:
+        """
+        Compute top benign similarity and contrastive margin:
+        margin = attack_similarity - top_benign_similarity.
+        """
+        benign_mat = await self._get_benign_vectors()
+        if benign_mat is None or len(benign_mat) == 0:
+            return (0.0, attack_similarity)
+
+        try:
+            q_vec = await self.store.embedder.embed_text(text)
+            q_arr = np.array(q_vec, dtype=np.float32)
+            norm = np.linalg.norm(q_arr)
+            if norm > 0:
+                q_arr = q_arr / norm
+            sims = np.dot(benign_mat, q_arr)
+            top_benign = float(np.max(sims))
+            margin = attack_similarity - top_benign
+            return (top_benign, margin)
+        except Exception as exc:
+            logger.debug("Benign contrast calculation skipped: %s", exc)
+            return (0.0, attack_similarity)
 
     def _sanitize_prompt(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
@@ -198,15 +272,20 @@ class RuntimeEnforcer:
         t0 = time.perf_counter()
         correlation_id = request.correlation_id or uuid.uuid4().hex[:12]
 
-        # Tier 1: Heuristics
+        # Tier 1: Heuristics & Canary
         heur_triggered, heur_tech, heur_score, heur_expl = self._inspect_heuristics(request.prompt)
 
-        # Tier 2: Semantic Vector Match
+        # Tier 1.5: Fast ML Classifier (<1ms)
+        ml_triggered, ml_tech, ml_conf, ml_expl = self._inspect_ml_classifier(request.prompt)
+
+        # Tier 2: Semantic Vector Match (<20ms)
         sim_score, vec_tech, _ = await self._inspect_vector_similarity(request.prompt)
 
+        # Tier 2.5: Contrastive Benign Margin Scoring (Eliminates False-Positive Trap)
+        sim_benign, margin = await self._compute_benign_contrast(request.prompt, sim_score)
+
         # Tier 3: Policy Decision
-        matched_technique = heur_tech or vec_tech or "standard_input"
-        risk_score = max(heur_score, int(sim_score * 100))
+        matched_technique = heur_tech or vec_tech or ml_tech or "standard_input"
 
         block_thresh = self.settings.gateway_block_threshold
         sanitize_thresh = self.settings.gateway_sanitize_threshold
@@ -220,19 +299,30 @@ class RuntimeEnforcer:
             action = EnforceActionEnum.block
             severity = SeverityEnum.critical
             explanation = f"Blocked by Layer-1 Heuristics: {heur_expl}"
-        elif sim_score >= block_thresh:
+            risk_score = heur_score
+        elif margin <= -0.05 and sim_benign >= 0.70 and not heur_triggered:
+            # Contrastive suppression: Prompt is substantially closer to benign usage than attacks
+            action = EnforceActionEnum.allow
+            severity = SeverityEnum.safe
+            explanation = f"Allowed by Contrastive Shield: Benign similarity ({sim_benign:.3f}) exceeds attack similarity ({sim_score:.3f}, margin: {margin:+.3f})."
+            risk_score = max(0, int((sim_score - sim_benign) * 100))
+            matched_technique = "benign_developer_query"
+        elif sim_score >= block_thresh and margin >= 0.05:
             action = EnforceActionEnum.block
             severity = SeverityEnum.high
-            explanation = f"Blocked by Layer-2 Vector Shield: Cosine similarity {sim_score:.3f} >= threshold {block_thresh} ({matched_technique})."
-        elif (heur_triggered and heur_score >= 70) or sim_score >= sanitize_thresh:
+            explanation = f"Blocked by Layer-2 Vector Shield: Cosine similarity {sim_score:.3f} >= threshold {block_thresh} ({matched_technique}, margin: {margin:+.3f})."
+            risk_score = int(sim_score * 100)
+        elif (heur_triggered and heur_score >= 70) or sim_score >= sanitize_thresh or (ml_triggered and ml_conf >= 0.85 and margin > 0.0):
             action = EnforceActionEnum.sanitize
             severity = SeverityEnum.medium
-            explanation = f"Sanitized by Policy: Elevated similarity {sim_score:.3f} or heuristic pattern detected. Boundary enclosure applied."
+            explanation = f"Sanitized by Policy: Elevated similarity {sim_score:.3f} (margin: {margin:+.3f}) or adversarial pattern detected. Boundary enclosure applied."
             sanitized_prompt = self._sanitize_prompt(request.prompt, request.system_prompt)
+            risk_score = max(heur_score, int(sim_score * 100), int(ml_conf * 75))
         else:
             action = EnforceActionEnum.allow
             severity = SeverityEnum.safe
             explanation = f"Clean prompt: Semantic similarity {sim_score:.3f} within safe operating bounds."
+            risk_score = max(0, int(sim_score * 100))
 
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 

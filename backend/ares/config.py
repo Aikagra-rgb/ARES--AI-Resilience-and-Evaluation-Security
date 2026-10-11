@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_default_model: str = Field(default="llama3.1:8b", alias="OLLAMA_DEFAULT_MODEL")
     ollama_embedding_model: str = Field(default="nomic-embed-text", alias="OLLAMA_EMBEDDING_MODEL")
-    prefer_local_embeddings: bool = Field(default=False, alias="PREFER_LOCAL_EMBEDDINGS")
+    prefer_local_embeddings: bool = Field(default=True, alias="PREFER_LOCAL_EMBEDDINGS")
 
     # Vector DB (Qdrant)
     qdrant_url: str = Field(default="", alias="QDRANT_URL")

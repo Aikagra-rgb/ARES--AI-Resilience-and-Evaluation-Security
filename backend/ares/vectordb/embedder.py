@@ -69,16 +69,17 @@ class GeminiEmbedder:
             return None
 
         client = await self._get_client()
-        url = f"{self.settings.ollama_base_url.rstrip('/')}/api/embeddings"
+        url = f"{self.settings.ollama_base_url.rstrip('/')}/api/embed"
         payload = {
             "model": self.settings.ollama_embedding_model,
-            "prompt": text,
+            "input": text,
         }
         try:
-            response = await client.post(url, json=payload, timeout=2.0)
+            response = await client.post(url, json=payload, timeout=5.0)
             if response.status_code == 200:
                 data = response.json()
-                vec = data.get("embedding", [])
+                embeddings = data.get("embeddings", [])
+                vec = embeddings[0] if embeddings and isinstance(embeddings[0], list) else data.get("embedding", [])
                 if isinstance(vec, list) and vec:
                     self._ollama_available = True
                     self._ollama_last_checked = now

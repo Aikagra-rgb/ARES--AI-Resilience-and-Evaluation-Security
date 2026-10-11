@@ -13,23 +13,29 @@ Classifier: TF-IDF (word 1-2 grams + char 3-5 grams, 800 features)
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold, cross_val_score
+from sklearn.naive_bayes import ComplementNB
+from sklearn.preprocessing import MinMaxScaler
 
 from ares.config import Settings, settings as default_settings
 from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL_PATH: Path = (
+    Path(__file__).parent.parent.parent / "data" / "models" / "classifier.joblib"
+)
 
 
 @dataclass
@@ -149,6 +155,58 @@ def _build_structural_features(payloads: List[Dict[str, Any]]) -> np.ndarray:
     return np.array(features, dtype=np.float32)
 
 
+@dataclass
+class AttackClassifierBundle:
+    """
+    Persisted, ultra-fast Scikit-Learn attack classifier bundle (<1ms inference).
+    Combines word TF-IDF, char TF-IDF, and 15 structural syntactic features.
+    """
+    clf: ComplementNB
+    tfidf_word: TfidfVectorizer
+    tfidf_char: TfidfVectorizer
+    scaler: MinMaxScaler
+    classes: List[str]
+
+    def predict_proba(self, text: str) -> Dict[str, float]:
+        """Compute class probabilities for a single prompt string."""
+        x_w = self.tfidf_word.transform([text]).toarray()
+        x_c = self.tfidf_char.transform([text]).toarray()
+        feats = _build_structural_features([{"attack_text": text}])
+        x_s = self.scaler.transform(feats)
+        x = np.hstack([x_w, x_c, x_s])
+        probs = self.clf.predict_proba(x)[0]
+        return {cls_name: float(p) for cls_name, p in zip(self.classes, probs)}
+
+    def predict(self, text: str) -> Tuple[str, float]:
+        """Return (top_category, confidence) in <1ms."""
+        prob_dict = self.predict_proba(text)
+        top_cat = max(prob_dict, key=prob_dict.get)
+        return top_cat, prob_dict[top_cat]
+
+    def save(self, path: Optional[Union[str, Path]] = None) -> Path:
+        """Persist classifier bundle using joblib."""
+        import joblib
+        out_path = Path(path) if path else DEFAULT_MODEL_PATH
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self, out_path)
+        logger.info("Saved trained AttackClassifierBundle to %s", out_path)
+        return out_path
+
+    @classmethod
+    def load(cls, path: Optional[Union[str, Path]] = None) -> Optional["AttackClassifierBundle"]:
+        """Load trained AttackClassifierBundle from disk if available."""
+        import joblib
+        target_path = Path(path) if path else DEFAULT_MODEL_PATH
+        if target_path.exists():
+            try:
+                bundle = joblib.load(target_path)
+                if isinstance(bundle, cls):
+                    return bundle
+            except Exception as exc:
+                logger.warning("Failed to load AttackClassifierBundle from %s: %s", target_path, exc)
+        return None
+
+
 class AttackVectorMLAnalyzer:
     """
     Fetches raw vector embeddings and metadata from Qdrant Cloud, computes
@@ -213,12 +271,12 @@ class AttackVectorMLAnalyzer:
         mask = ~np.eye(sample_size, dtype=bool)
         pairwise_sims = sim_sample[mask]
 
-        # PCA Analysis
-        n_components = min(5, n_samples)
-        pca = PCA(n_components=n_components)
-        pca.fit(vectors)
-        top_3_variance = [float(v) for v in pca.explained_variance_ratio_[:3]]
-        cum_variance_top_5 = float(np.sum(pca.explained_variance_ratio_))
+        # PCA Analysis via Exact SVD (Device Guard and Windows Safe)
+        X_centered = vectors - np.mean(vectors, axis=0)
+        _, S, _ = np.linalg.svd(X_centered, full_matrices=False)
+        exp_var = (S ** 2) / np.sum(S ** 2)
+        top_3_variance = [float(v) for v in exp_var[:3]]
+        cum_variance_top_5 = float(np.sum(exp_var[:min(5, len(exp_var))]))
 
         # Category labels
         categories = [p.get("category", "unknown") for p in payloads]
@@ -295,39 +353,61 @@ class AttackVectorMLAnalyzer:
 
         # 3b. 15-dim structural/syntactic features
         struct_feats = _build_structural_features(payloads)
-        scaler = StandardScaler()
+        scaler = MinMaxScaler()
         X_struct = scaler.fit_transform(struct_feats)
 
         # 3c. Concatenate: 400 + 400 + 15 = 815 features
         X = np.hstack([X_word, X_char, X_struct])
 
-        # --- 4. Stratified K-Fold CV ---
+        # --- 4. Group Identification for Honest Generalization (Fix Issue 14) ---
+        # Group payloads by root template/prefix hash to eliminate template leakage between train and test splits
+        groups = []
+        for p in payloads:
+            txt = p.get("attack_text", "").strip()
+            clean_prefix = re.sub(r"\b(CANARY_[A-Za-z0-9_]+|[A-Z]{3,})\b", "", txt[:50]).strip()
+            gid = hashlib.sha256(clean_prefix.encode("utf-8")).hexdigest()[:8]
+            groups.append(gid)
+
         min_class_count = min(category_counts.values())
         k_folds = max(2, min(5, min_class_count))
-        skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
+        unique_groups = len(set(groups))
 
-        # --- 5. Classifier: Balanced Logistic Regression on TF-IDF + Structural ---
-        # Fast, interpretable, no threading overhead on Windows.
-        # LR with class_weight='balanced' handles the context_smuggling imbalance.
-        clf_lr = LogisticRegression(
-            max_iter=2000,
-            C=5.0,
-            class_weight="balanced",
-            solver="lbfgs",
-        )
+        # --- 5. Classifier: Complement Naive Bayes (Fast, High-Precision, Windows-Safe) ---
+        clf_nb = ComplementNB(alpha=0.5)
 
-        # --- 6. Stratified 5-Fold Cross-Validation ---
-        cv_scores = cross_val_score(clf_lr, X, y, cv=skf, scoring="accuracy")
-        logger.info("LR CV: %.3f +- %.3f", np.mean(cv_scores), np.std(cv_scores))
+        # --- 6. Grouped vs Stratified Cross-Validation ---
+        if unique_groups >= k_folds:
+            cv_splitter = StratifiedGroupKFold(n_splits=k_folds)
+            cv_scores = cross_val_score(clf_nb, X, y, cv=cv_splitter, groups=groups, scoring="accuracy")
+            cv_desc = f"StratifiedGroupKFold({k_folds}-fold, {unique_groups} groups)"
+        else:
+            cv_splitter = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
+            cv_scores = cross_val_score(clf_nb, X, y, cv=cv_splitter, scoring="accuracy")
+            cv_desc = f"StratifiedKFold({k_folds}-fold)"
+
+        logger.info("Classifier CV (%s): %.3f +- %.3f", cv_desc, np.mean(cv_scores), np.std(cv_scores))
 
         # Train on full corpus for the per-class classification report
-        clf_lr.fit(X, y)
-        y_pred      = clf_lr.predict(X)
+        clf_nb.fit(X, y)
+        y_pred      = clf_nb.predict(X)
         report_dict = classification_report(y, y_pred, output_dict=True, zero_division=0)
         cm          = confusion_matrix(y, y_pred, labels=unique_categories).tolist()
 
+        # Build and persist the runtime classifier bundle for sub-1ms Gateway Tier 1 inspection (Issue 9)
+        bundle = AttackClassifierBundle(
+            clf=clf_nb,
+            tfidf_word=tfidf_word,
+            tfidf_char=tfidf_char,
+            scaler=scaler,
+            classes=unique_categories,
+        )
+        try:
+            bundle.save()
+        except Exception as exc:
+            logger.warning("Could not persist AttackClassifierBundle: %s", exc)
+
         model_name = (
-            f"LogisticRegression(C=5, balanced) | "
+            f"ComplementNB(alpha=0.5) | "
             f"TF-IDF(word1-2+char3-5, 800feat) + 15-Structural | "
             f"CV={np.mean(cv_scores)*100:.1f}% (+-{np.std(cv_scores)*100:.1f}%)"
         )

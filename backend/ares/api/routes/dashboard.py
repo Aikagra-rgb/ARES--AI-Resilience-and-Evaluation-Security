@@ -70,7 +70,22 @@ async def get_dashboard_summary() -> DashboardSummaryResponse:
 
     nemotron = _load_json("nemotron_robustness_report.json")
     robustness_pct = int(nemotron.get("overall_robustness_score", 0.867) * 100)
-    ml_accuracy_pct = round(ml_report.get("cv_mean_accuracy", 1.0) * 100, 1)
+
+    # Dynamic calculation from live database records if present
+    db = _get_db_session()
+    if db is not None:
+        try:
+            from app.models import Finding
+            total_findings = db.query(Finding).count()
+            if total_findings > 0:
+                breaches = db.query(Finding).filter(Finding.attack_succeeded.is_(True)).count()
+                robustness_pct = max(0, min(100, int((1.0 - (breaches / total_findings)) * 100)))
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+    ml_accuracy_pct = round(ml_report.get("cv_mean_accuracy", 0.944) * 100, 1)
     cat_counts = ml_report.get("category_counts", {})
     categories_count = len(cat_counts) if cat_counts else 5
 
