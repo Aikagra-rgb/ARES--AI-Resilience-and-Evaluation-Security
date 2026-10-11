@@ -13,33 +13,48 @@
     </div>
     <div class="intro-meta">
         <span>Gateway Status</span>
-        <strong style="color:#10b981;">● @(_status?.Status.ToUpperInvariant() ?? "OPERATIONAL")</strong>
+        @if (_status is not null)
+        {
+            <strong style="color:#10b981;">● @(_status.Status.ToUpperInvariant())</strong>
+        }
+        else
+        {
+            <strong style="color:#ef4444;">● OFFLINE</strong>
+        }
         <a class="button button-secondary" style="font-size:0.85rem;padding:0.35rem 0.75rem;" href="/optimizer">
             ⚡ Prompt Optimizer
         </a>
     </div>
 </section>
 
+@if (!string.IsNullOrEmpty(_gatewayError))
+{
+    <div style="margin: 1rem 0; padding:0.75rem 1rem;background:rgba(239,68,68,0.15);border:1px solid #ef4444;border-radius:6px;color:#fca5a5;font-size:0.88rem;display:flex;justify-content:space-between;align-items:center;">
+        <span>⚠️ <strong>Gateway Service Unreachable:</strong> @_gatewayError</span>
+        <button class="button button-secondary" style="font-size:0.75rem;padding:0.2rem 0.5rem;" @onclick="LoadStatusAsync">Retry</button>
+    </div>
+}
+
 <!-- Gateway Telemetry Bar -->
 <section class="metric-grid" aria-label="Gateway telemetry metrics">
     <article class="surface-card metric-card">
         <p class="eyebrow">Corpus Protection Base</p>
-        <p class="metric-value accent-green">@((_status?.QdrantPoints ?? 3695).ToString("N0"))</p>
-        <p class="metric-desc">Qdrant Cloud attack vectors indexed</p>
+        <p class="metric-value accent-green">@(_status is not null ? _status.QdrantPoints.ToString("N0") : "—")</p>
+        <p class="metric-desc">@(_status is not null ? "Qdrant Cloud attack vectors indexed" : "Service offline")</p>
     </article>
     <article class="surface-card metric-card">
         <p class="eyebrow">Block Threshold</p>
-        <p class="metric-value" style="color:#ef4444;">&ge; @((_status?.BlockThreshold ?? 0.82).ToString("F2"))</p>
+        <p class="metric-value" style="color:#ef4444;">@(_status is not null ? $"≥ {_status.BlockThreshold:F2}" : "—")</p>
         <p class="metric-desc">Cosine similarity cutoff for hard refusal</p>
     </article>
     <article class="surface-card metric-card">
         <p class="eyebrow">Sanitize Threshold</p>
-        <p class="metric-value" style="color:#f59e0b;">&ge; @((_status?.SanitizeThreshold ?? 0.68).ToString("F2"))</p>
+        <p class="metric-value" style="color:#f59e0b;">@(_status is not null ? $"≥ {_status.SanitizeThreshold:F2}" : "—")</p>
         <p class="metric-desc">Isolation inside security boundaries</p>
     </article>
     <article class="surface-card metric-card">
         <p class="eyebrow">Canary Token Shield</p>
-        <p class="metric-value" style="color:#38bdf8;font-size:1.3rem;">ACTIVE</p>
+        <p class="metric-value" style="color:@(_status?.CanaryTokenConfigured == true ? "#38bdf8" : "#94a3b8");font-size:1.3rem;">@(_status is not null ? (_status.CanaryTokenConfigured ? "ACTIVE" : "DISABLED") : "OFFLINE")</p>
         <p class="metric-desc">Zero-leak exfiltration trap</p>
     </article>
 </section>
@@ -244,6 +259,7 @@
     private string _appName = "ARES Enterprise Core";
     private bool _isEnforcing;
     private string? _errorMessage;
+    private string? _gatewayError;
     private GatewayStatusResponse? _status;
     private GatewayEnforceResponse? _enforceResult;
     private IReadOnlyList<RuntimeIncident>? _incidents;
@@ -257,11 +273,13 @@
     {
         try
         {
+            _gatewayError = null;
             _status = await Api.GetGatewayStatusAsync(_cts.Token);
         }
-        catch
+        catch (Exception ex)
         {
-            _status = new GatewayStatusResponse("operational", 3695, 0.82, 0.68, true, "1.0.0");
+            _status = null;
+            _gatewayError = ex.Message;
         }
     }
 

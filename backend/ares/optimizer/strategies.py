@@ -184,3 +184,40 @@ def programmatically_harden_prompt(
         "------------------------------------"
     )
     return hardened
+
+
+# ---------------------------------------------------------------------------
+# Static (offline) hardening score
+# ---------------------------------------------------------------------------
+
+# (check name, weight, predicate). Each check looks for a concrete defensive
+# property in the prompt text. This is a *static-analysis* estimate of how many
+# known defenses are present; it never claims to be an empirical breach rate.
+_STATIC_CHECKS = (
+    ("input_delimiters", 20, lambda p: "<user_input>" in p or "```user" in p),
+    ("untrusted_input_rule", 15, lambda p: "untrusted" in p or "zero trust" in p or "zero-trust" in p),
+    ("override_rejection", 15, lambda p: any(w in p for w in ("ignore", "disregard", "override", "supersed"))
+        and any(w in p for w in ("reject", "refuse", "never", "do not", "must not"))),
+    ("secret_protection", 20, lambda p: any(w in p for w in ("canary", "confidential", "secret"))
+        and any(w in p for w in ("never", "under no circumstances", "do not", "prohibit"))),
+    ("persona_pinning", 10, lambda p: any(w in p for w in ("persona", "identity", "role"))
+        and any(w in p for w in ("retain", "anchor", "permanently", "pin"))),
+    ("encoding_defense", 10, lambda p: any(w in p for w in ("base64", "rot13", "hex", "encoding"))),
+    ("explicit_boundary_section", 10, lambda p: "<security_boundary>" in p or "security directive" in p
+        or "security enforcement" in p),
+)
+
+# Static analysis cannot certify a prompt as fully robust, so the score is capped.
+_STATIC_SCORE_CAP = 95
+
+
+def score_prompt_hardening(prompt: str) -> int:
+    """
+    Deterministic 0-95 score for how many known defensive properties a system prompt
+    contains. Used when no empirical evaluation could be run (e.g. LLM providers are
+    rate-limited), so reported scores are always derived from the prompt itself rather
+    than fixed constants.
+    """
+    text = (prompt or "").lower()
+    total = sum(weight for _name, weight, check in _STATIC_CHECKS if check(text))
+    return min(total, _STATIC_SCORE_CAP)

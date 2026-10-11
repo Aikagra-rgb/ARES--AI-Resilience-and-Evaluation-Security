@@ -9,7 +9,7 @@ public enum AttackCategory
     PolicyBypass, RoleManipulation, ToolMisuse, EncodingOrObfuscation
 }
 
-public enum AiProvider { OpenAI, Groq, Gemini, NvidiaNim }
+public enum AiProvider { OpenAI, Groq, Gemini, NvidiaNim, Ollama }
 public enum AttackSource { Manual, Corpus, Generated }
 public enum TestRunStatus { Idle, Queued, Running, Completed, Blocked, Failed, Cancelled }
 public enum Severity { Safe, Low, Medium, High, Critical }

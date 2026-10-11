@@ -10,6 +10,7 @@ Provides multi-layer real-time defense for production LLM endpoints:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -151,7 +152,9 @@ class RuntimeEnforcer:
                     SeverityEnum.critical: Severity.critical,
                 }
 
-                attack_succeeded = decision.action == EnforceActionEnum.block
+                # A block/sanitize means the defense held, so the attack did NOT succeed.
+                # (Allowed traffic is not proven malicious either, so it is also False.)
+                attack_succeeded = False
 
                 tr = TestRun(
                     id=run_id,
@@ -163,7 +166,7 @@ class RuntimeEnforcer:
                         "action": decision.action.value,
                         "source": "runtime_gateway",
                     },
-                    prompt_fingerprint=f"gw-{hash(request.prompt) & 0xFFFFFFFF:08x}",
+                    prompt_fingerprint=f"gw-{hashlib.sha256(request.prompt.encode('utf-8')).hexdigest()[:8]}",
                     correlation_id=decision.correlation_id,
                     created_at=decision.timestamp,
                 )

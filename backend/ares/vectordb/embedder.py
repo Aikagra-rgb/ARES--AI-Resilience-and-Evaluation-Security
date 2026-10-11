@@ -44,6 +44,8 @@ class GeminiEmbedder:
         self.model = self.settings.gemini_embedding_model
         self.dimension = self.settings.qdrant_vector_size
         self._gemini_rate_limited: bool = False
+        self._ollama_available: bool = True
+        self._ollama_last_checked: float = 0.0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._http_client is None or getattr(self._http_client, "is_closed", False) is True:
@@ -58,12 +60,92 @@ class GeminiEmbedder:
         if self._owns_http_client and self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
 
+    async def _try_ollama_embed(self, text: str) -> Optional[List[float]]:
+        """Attempt high-speed local GPU embedding via Ollama nomic-embed-text."""
+        if not getattr(self.settings, "prefer_local_embeddings", False):
+            return None
+        now = time.time()
+        if not self._ollama_available and (now - self._ollama_last_checked) < 60.0:
+            return None
+
+        client = await self._get_client()
+        url = f"{self.settings.ollama_base_url.rstrip('/')}/api/embeddings"
+        payload = {
+            "model": self.settings.ollama_embedding_model,
+            "prompt": text,
+        }
+        try:
+            response = await client.post(url, json=payload, timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                vec = data.get("embedding", [])
+                if isinstance(vec, list) and vec:
+                    self._ollama_available = True
+                    self._ollama_last_checked = now
+                    if len(vec) == self.dimension:
+                        return vec
+                    elif len(vec) > self.dimension:
+                        return vec[:self.dimension]
+                    else:
+                        return vec + [0.0] * (self.dimension - len(vec))
+            self._ollama_available = False
+            self._ollama_last_checked = now
+            return None
+        except Exception:
+            self._ollama_available = False
+            self._ollama_last_checked = now
+            return None
+
+    async def _try_ollama_batch(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """Attempt local batch embedding via Ollama nomic-embed-text."""
+        if not getattr(self.settings, "prefer_local_embeddings", False):
+            return None
+        now = time.time()
+        if not self._ollama_available and (now - self._ollama_last_checked) < 60.0:
+            return None
+
+        client = await self._get_client()
+        url = f"{self.settings.ollama_base_url.rstrip('/')}/api/embed"
+        payload = {
+            "model": self.settings.ollama_embedding_model,
+            "input": texts,
+        }
+        try:
+            response = await client.post(url, json=payload, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                embeddings = data.get("embeddings", [])
+                if len(embeddings) == len(texts):
+                    self._ollama_available = True
+                    self._ollama_last_checked = now
+                    result = []
+                    for vec in embeddings:
+                        if len(vec) == self.dimension:
+                            result.append(vec)
+                        elif len(vec) > self.dimension:
+                            result.append(vec[:self.dimension])
+                        else:
+                            result.append(vec + [0.0] * (self.dimension - len(vec)))
+                    return result
+            self._ollama_available = False
+            self._ollama_last_checked = now
+            return None
+        except Exception:
+            self._ollama_available = False
+            self._ollama_last_checked = now
+            return None
+
     async def embed_text(self, text: str) -> List[float]:
         """
         Embed a single text string into a float vector of length `dimension`.
         """
         if not text.strip():
             raise ValueError("Cannot embed empty text.")
+
+        # 1. Try local Ollama nomic-embed-text for sub-20ms GPU inference
+        local_vec = await self._try_ollama_embed(text)
+        if local_vec is not None:
+            return local_vec
 
         if self._gemini_rate_limited:
             return self._fallback_project_embeddings([text])[0]
@@ -160,6 +242,11 @@ class GeminiEmbedder:
         """
         if not texts:
             return []
+
+        # 1. Try local Ollama nomic-embed-text for fast batching
+        local_batch = await self._try_ollama_batch(texts)
+        if local_batch is not None:
+            return local_batch
 
         if self._gemini_rate_limited:
             return self._fallback_project_embeddings(texts)

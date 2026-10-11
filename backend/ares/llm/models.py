@@ -7,6 +7,7 @@ class LLMProvider(str, Enum):
     GROQ = "groq"
     GEMINI = "gemini"
     NVIDIA = "nvidia"
+    OLLAMA = "ollama"
 
     @classmethod
     def from_str(cls, value: str) -> "LLMProvider":
@@ -17,7 +18,9 @@ class LLMProvider(str, Enum):
             return cls.GEMINI
         elif val in ("nvidia", "nim", "nemotron"):
             return cls.NVIDIA
-        raise ValueError(f"Unknown provider '{value}'. Expected 'groq', 'gemini', or 'nvidia'.")
+        elif val in ("ollama", "local"):
+            return cls.OLLAMA
+        raise ValueError(f"Unknown provider '{value}'. Expected 'groq', 'gemini', 'nvidia', or 'ollama'.")
 
 
 class ChatMessage(BaseModel):

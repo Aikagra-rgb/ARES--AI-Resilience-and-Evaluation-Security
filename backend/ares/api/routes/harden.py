@@ -46,7 +46,7 @@ async def harden_prompt(request: HardenRequest) -> HardenResponse:
         logging.getLogger("ares.harden").warning(
             "Live LLM optimizer encountered provider limit (%s). Synthesizing programmatic zero-trust boundary.", exc
         )
-        from ares.optimizer.strategies import programmatically_harden_prompt
+        from ares.optimizer.strategies import programmatically_harden_prompt, score_prompt_hardening
         from ares.optimizer.models import HardeningStrategy
         strat_enums = [
             HardeningStrategy.DELIMITER_SANDBOXING,
@@ -60,9 +60,9 @@ async def harden_prompt(request: HardenRequest) -> HardenResponse:
             strategies=strat_enums,
             domain=request.domain,
         )
-        baseline = 15
-        hardened = 95
-        strategy_name = "zero_trust_boundary"
+        baseline = score_prompt_hardening(request.system_prompt)
+        hardened = score_prompt_hardening(hardened_prompt)
+        strategy_name = "zero_trust_boundary (static estimate)"
         base_tok = max(1, int(len(request.system_prompt.split()) * 1.3))
         hard_tok = max(1, int(len(hardened_prompt.split()) * 1.3))
         overhead = max(0, hard_tok - base_tok)

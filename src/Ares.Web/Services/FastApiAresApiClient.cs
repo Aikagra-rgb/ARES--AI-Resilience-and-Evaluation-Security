@@ -198,139 +198,85 @@ public sealed class FastApiAresApiClient : IAresApiClient
     public Task<Challenge> CreateChallengeAsync(CreateChallengeRequest request, CancellationToken cancellationToken) => _learningFallback.CreateChallengeAsync(request, cancellationToken);
     public Task<Challenge> UpdateChallengeAsync(UpdateChallengeRequest request, CancellationToken cancellationToken) => _learningFallback.UpdateChallengeAsync(request, cancellationToken);
 
-    // ── Phase 6: ML Stats, Semantic Search, and Prompt Hardening ───────────────
-    public async Task<StatsResponse> GetStatsAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _http.GetAsync("api/v1/stats", cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                using var fallback = await _http.GetAsync("api/stats", cancellationToken);
-                if (fallback.IsSuccessStatusCode)
-                    return await fallback.Content.ReadFromJsonAsync<StatsResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.GetStatsAsync(cancellationToken);
-                return await _learningFallback.GetStatsAsync(cancellationToken);
-            }
-            return await response.Content.ReadFromJsonAsync<StatsResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.GetStatsAsync(cancellationToken);
-        }
-        catch
-        {
-            return await _learningFallback.GetStatsAsync(cancellationToken);
-        }
-    }
+    // ── Phase 6: ML Stats, Semantic Search, Prompt Hardening, Runtime Gateway ──
+    // These endpoints fail loudly. If the backend is down or returns an error, the caller
+    // receives an exception that the page shows to the user, instead of silently being
+    // handed mock data that looks like a real result.
+    public Task<StatsResponse> GetStatsAsync(CancellationToken cancellationToken) =>
+        SendLiveAsync<StatsResponse>(HttpMethod.Get, ["api/v1/stats", "api/stats"], null, cancellationToken);
 
-    public async Task<StatsResponse> RetrainStatsAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _http.PostAsync("api/stats/retrain", null, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                using var fallback = await _http.PostAsync("api/v1/stats/retrain", null, cancellationToken);
-                if (fallback.IsSuccessStatusCode)
-                    return await fallback.Content.ReadFromJsonAsync<StatsResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.RetrainStatsAsync(cancellationToken);
-                return await _learningFallback.RetrainStatsAsync(cancellationToken);
-            }
-            return await response.Content.ReadFromJsonAsync<StatsResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.RetrainStatsAsync(cancellationToken);
-        }
-        catch
-        {
-            return await _learningFallback.RetrainStatsAsync(cancellationToken);
-        }
-    }
+    public Task<StatsResponse> RetrainStatsAsync(CancellationToken cancellationToken) =>
+        SendLiveAsync<StatsResponse>(HttpMethod.Post, ["api/stats/retrain", "api/v1/stats/retrain"], null, cancellationToken);
 
     public async Task<string> GetReportAsync(string testId, string format, CancellationToken cancellationToken)
     {
+        var route = $"api/tests/{Uri.EscapeDataString(testId)}/report?format={Uri.EscapeDataString(format)}";
         try
         {
-            using var response = await _http.GetAsync($"api/tests/{Uri.EscapeDataString(testId)}/report?format={Uri.EscapeDataString(format)}", cancellationToken);
+            using var response = await _http.GetAsync(route, cancellationToken);
             if (response.IsSuccessStatusCode)
-            {
                 return await response.Content.ReadAsStringAsync(cancellationToken);
-            }
-            return await _learningFallback.GetReportAsync(testId, format, cancellationToken);
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException($"ARES API '{route}' returned {(int)response.StatusCode}: {Truncate(detail)}", null, response.StatusCode);
         }
-        catch
+        catch (HttpRequestException ex) when (ex.StatusCode is null)
         {
-            return await _learningFallback.GetReportAsync(testId, format, cancellationToken);
+            throw UnreachableError(ex);
         }
     }
 
-    public async Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken)
+    public Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken) =>
+        SendLiveAsync<SearchResponse>(HttpMethod.Post, ["api/v1/search", "api/search"], request, cancellationToken);
+
+    public Task<HardenResponse> HardenAsync(HardenRequest request, CancellationToken cancellationToken) =>
+        SendLiveAsync<HardenResponse>(HttpMethod.Post, ["api/v1/harden", "api/harden"], request, cancellationToken);
+
+    public Task<GatewayEnforceResponse> EnforcePromptAsync(GatewayEnforceRequest request, CancellationToken cancellationToken) =>
+        SendLiveAsync<GatewayEnforceResponse>(HttpMethod.Post, ["api/gateway/enforce"], request, cancellationToken);
+
+    public Task<GatewayStatusResponse> GetGatewayStatusAsync(CancellationToken cancellationToken) =>
+        SendLiveAsync<GatewayStatusResponse>(HttpMethod.Get, ["api/gateway/status"], null, cancellationToken);
+
+    /// <summary>
+    /// Calls the first route that exists (alternates are only tried on HTTP 404) and throws a
+    /// descriptive <see cref="HttpRequestException"/> on any failure. Never returns mock data.
+    /// </summary>
+    private async Task<T> SendLiveAsync<T>(HttpMethod method, string[] routes, object? body, CancellationToken cancellationToken)
     {
-        try
+        HttpRequestException? failure = null;
+        foreach (var route in routes)
         {
-            using var response = await _http.PostAsJsonAsync("api/v1/search", request, JsonOptions, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                using var fallback = await _http.PostAsJsonAsync("api/search", request, JsonOptions, cancellationToken);
-                if (fallback.IsSuccessStatusCode)
-                    return await fallback.Content.ReadFromJsonAsync<SearchResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.SearchAsync(request, cancellationToken);
-                return await _learningFallback.SearchAsync(request, cancellationToken);
+                using var message = new HttpRequestMessage(method, route);
+                if (body is not null)
+                    message.Content = JsonContent.Create(body, body.GetType(), options: JsonOptions);
+
+                using var response = await _http.SendAsync(message, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken)
+                        ?? throw new InvalidOperationException($"ARES API returned an empty response for '{route}'.");
+                }
+
+                var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                failure = new HttpRequestException(
+                    $"ARES API '{route}' returned {(int)response.StatusCode}: {Truncate(detail)}", null, response.StatusCode);
+                if (response.StatusCode != HttpStatusCode.NotFound) break;
             }
-            return await response.Content.ReadFromJsonAsync<SearchResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.SearchAsync(request, cancellationToken);
+            catch (HttpRequestException ex) when (ex.StatusCode is null)
+            {
+                throw UnreachableError(ex);
+            }
         }
-        catch
-        {
-            return await _learningFallback.SearchAsync(request, cancellationToken);
-        }
+        throw failure ?? new HttpRequestException("ARES API request failed.");
     }
 
-    public async Task<HardenResponse> HardenAsync(HardenRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _http.PostAsJsonAsync("api/v1/harden", request, JsonOptions, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                using var fallback = await _http.PostAsJsonAsync("api/harden", request, JsonOptions, cancellationToken);
-                if (fallback.IsSuccessStatusCode)
-                    return await fallback.Content.ReadFromJsonAsync<HardenResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.HardenAsync(request, cancellationToken);
-                return await _learningFallback.HardenAsync(request, cancellationToken);
-            }
-            return await response.Content.ReadFromJsonAsync<HardenResponse>(JsonOptions, cancellationToken) ?? await _learningFallback.HardenAsync(request, cancellationToken);
-        }
-        catch
-        {
-            return await _learningFallback.HardenAsync(request, cancellationToken);
-        }
-    }
+    private HttpRequestException UnreachableError(HttpRequestException inner) =>
+        new($"The ARES backend is unreachable at '{_http.BaseAddress}'. Is it running? ({inner.Message})", inner);
 
-    public async Task<GatewayEnforceResponse> EnforcePromptAsync(GatewayEnforceRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _http.PostAsJsonAsync("api/gateway/enforce", request, JsonOptions, cancellationToken);
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadFromJsonAsync<GatewayEnforceResponse>(JsonOptions, cancellationToken)
-                    ?? await _learningFallback.EnforcePromptAsync(request, cancellationToken);
-            }
-            return await _learningFallback.EnforcePromptAsync(request, cancellationToken);
-        }
-        catch
-        {
-            return await _learningFallback.EnforcePromptAsync(request, cancellationToken);
-        }
-    }
+    private static string Truncate(string text) => text.Length <= 300 ? text : text[..300] + "...";
 
-    public async Task<GatewayStatusResponse> GetGatewayStatusAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await _http.GetAsync("api/gateway/status", cancellationToken);
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadFromJsonAsync<GatewayStatusResponse>(JsonOptions, cancellationToken)
-                    ?? await _learningFallback.GetGatewayStatusAsync(cancellationToken);
-            }
-            return await _learningFallback.GetGatewayStatusAsync(cancellationToken);
-        }
-        catch
-        {
-            return await _learningFallback.GetGatewayStatusAsync(cancellationToken);
-        }
-    }
 
 
 
@@ -370,7 +316,15 @@ public sealed class FastApiAresApiClient : IAresApiClient
     private static bool GetBool(Dictionary<string, JsonElement> data, string key) => data.TryGetValue(key, out var value) && value.ValueKind == JsonValueKind.True;
     private static List<AttackCategory> GetCategories(Dictionary<string, JsonElement> data, string key = "attack_categories") => data.TryGetValue(key, out var value) && value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().Select(item => ParseCategory(item.GetString() ?? string.Empty)).ToList() : [AttackCategory.DirectPromptInjection];
     private static TestRunStatus ParseStatus(string value) => Enum.Parse<TestRunStatus>(value, true);
-    private static AiProvider ParseProvider(string value) => Enum.Parse<AiProvider>(value, true);
+    private static AiProvider ParseProvider(string value) => value.Replace("_", "").ToLowerInvariant() switch
+    {
+        "openai" => AiProvider.OpenAI,
+        "groq" => AiProvider.Groq,
+        "gemini" => AiProvider.Gemini,
+        "nvidianim" or "nvidia" => AiProvider.NvidiaNim,
+        "ollama" or "local" => AiProvider.Ollama,
+        _ => Enum.TryParse<AiProvider>(value.Replace("_", ""), true, out var prov) ? prov : AiProvider.Groq
+    };
     private static AttackCategory ParseCategory(string value) => Enum.Parse<AttackCategory>(value, true);
     private static Severity ParseSeverity(string value) => Enum.Parse<Severity>(value, true);
     private static Challenge ToChallenge(ApiChallenge item) => new(item.Id, item.Title, item.Description, Enum.Parse<ChallengeTrack>(item.Track, true), Enum.Parse<DifficultyTier>(item.Tier, true), ParseCategory(item.Category), item.ScenarioContext, item.Objective, item.Hint, Enum.Parse<DifficultyTier>(item.ModelTier, true), item.TimeParMinutes, item.MaxScore, item.IsRoomLocked, item.Tags);

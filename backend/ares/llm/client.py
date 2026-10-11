@@ -70,6 +70,12 @@ class LLMClient:
                 self.settings.nvidia_api_key,
                 self.settings.nvidia_default_model,
             )
+        elif provider == LLMProvider.OLLAMA:
+            return (
+                self.settings.ollama_base_url.rstrip("/") + "/v1",
+                "ollama",
+                self.settings.ollama_default_model,
+            )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -108,7 +114,7 @@ class LLMClient:
         base_url, api_key, default_model = self._get_provider_config(provider)
         target_model = model or default_model
 
-        if not api_key:
+        if not api_key and provider != LLMProvider.OLLAMA:
             raise LLMAuthenticationError(
                 f"Missing API key for provider '{provider.value}'. Check your .env file.",
                 provider=provider.value,
@@ -117,9 +123,10 @@ class LLMClient:
 
         endpoint = f"{base_url}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         payload: Dict[str, Any] = {
             "model": target_model,

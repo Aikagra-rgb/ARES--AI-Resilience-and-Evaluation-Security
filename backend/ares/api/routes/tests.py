@@ -57,6 +57,7 @@ _PROVIDER_MAP: Dict[AiProviderEnum, str] = {
     AiProviderEnum.groq:       "groq",
     AiProviderEnum.gemini:     "gemini",
     AiProviderEnum.nvidia_nim: "nvidia",
+    AiProviderEnum.ollama:     "ollama",
     AiProviderEnum.openai:     "groq",   # fallback
 }
 
@@ -366,15 +367,12 @@ async def create_and_run_test(request: CreateTestRequest) -> TestRunResponse:
         py_categories = list({to_backend_category(c) for c in cfg.attack_categories})
 
         evaluator = PromptRobustnessEvaluator(settings=settings)
-        report = await asyncio.to_thread(
-            asyncio.get_event_loop().run_until_complete,
-            evaluator.evaluate(
-                target_prompt=cfg.system_prompt,
-                categories=py_categories,
-                attempts_per_category=cfg.variation_count,
-                victim_provider=_PROVIDER_MAP.get(cfg.provider, "groq"),
-                victim_model=cfg.model,
-            ),
+        report = await evaluator.evaluate(
+            target_prompt=cfg.system_prompt,
+            categories=py_categories,
+            attempts_per_category=cfg.variation_count,
+            victim_provider=_PROVIDER_MAP.get(cfg.provider, "groq"),
+            victim_model=cfg.model,
         )
 
         completed_at = _now()
@@ -531,6 +529,20 @@ async def cancel_test(test_id: str) -> CancelTestResponse:
     if test_id in _test_store:
         run = _test_store[test_id]
         _test_store[test_id] = run.model_copy(update={"status": TestRunStatusEnum.cancelled})
+
+    try:
+        from sqlalchemy.orm import Session
+        from app.database import engine
+        from app.models import TestRun as DbTestRun, TestRunStatus as DbTestRunStatus
+
+        with Session(bind=engine) as db:
+            db_run = db.query(DbTestRun).filter_by(id=test_id).first()
+            if db_run:
+                db_run.status = DbTestRunStatus.cancelled
+                db.commit()
+    except Exception as exc:
+        logger.warning("Could not persist cancellation to DB for %s: %s", test_id, exc)
+
     return CancelTestResponse(
         test_id=test_id,
         status=TestRunStatusEnum.cancelled,

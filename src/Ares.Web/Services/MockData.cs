@@ -16,7 +16,9 @@ public static class MockData
         new(AiProvider.Groq, "qwen-qwq-32b", "Qwen QwQ 32B", 32768, true),
         new(AiProvider.Gemini, "gemini-2.5-flash", "Gemini 2.5 Flash", 1048576, true),
         new(AiProvider.Gemini, "gemini-2.5-pro", "Gemini 2.5 Pro", 1048576, true),
-        new(AiProvider.NvidiaNim, "meta/llama-3.1-70b-instruct", "Llama 3.1 70B via NIM", 131072, false)
+        new(AiProvider.NvidiaNim, "meta/llama-3.1-70b-instruct", "Llama 3.1 70B via NIM", 131072, false),
+        new(AiProvider.Ollama, "llama3.1:8b", "Llama 3.1 8B (Local RTX)", 128000, true),
+        new(AiProvider.Ollama, "mistral:latest", "Mistral 7B (Local RTX)", 32768, true)
     ];
 
     public static DashboardSummary DashboardSummary() => new(
@@ -322,7 +324,7 @@ public static class AresDisplayExtensions
         AttackCategory.EncodingOrObfuscation => "Encoding or obfuscation",
         _ => category.ToString()
     };
-    public static string ToLabel(this AiProvider provider) => provider switch { AiProvider.NvidiaNim => "NVIDIA NIM", _ => provider.ToString() };
+    public static string ToLabel(this AiProvider provider) => provider switch { AiProvider.NvidiaNim => "NVIDIA NIM", AiProvider.Ollama => "Ollama (Local GPU)", _ => provider.ToString() };
     public static string ToLabel(this TestRunStatus status) => status switch { TestRunStatus.Queued => "Queued", _ => status.ToString() };
     public static string ToLabel(this ChallengeTrack track) => track == ChallengeTrack.Attacker ? "Attacker" : "Defender";
     public static string ToLabel(this DifficultyTier tier) => tier.ToString();

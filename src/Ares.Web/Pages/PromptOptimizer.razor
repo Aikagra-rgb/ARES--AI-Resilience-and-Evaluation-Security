@@ -36,32 +36,32 @@
         <div style="padding:0.75rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
             <p class="eyebrow" style="margin:0 0 0.25rem 0;">LLM Hardener Service</p>
             <div style="display:flex;align-items:center;gap:0.5rem;">
-                <span style="font-weight:700;font-size:1.05rem;color:#38bdf8;">@(_result?.ProviderUsed?.ToUpperInvariant() ?? "NVIDIA NIM")</span>
-                <span style="font-size:0.75rem;background:rgba(56,189,248,0.15);color:#38bdf8;padding:2px 6px;border-radius:4px;">Primary</span>
+                <span style="font-weight:700;font-size:1.05rem;color:#38bdf8;">@(_result?.ProviderUsed?.ToUpperInvariant() ?? "STANDBY")</span>
+                <span style="font-size:0.75rem;background:rgba(56,189,248,0.15);color:#38bdf8;padding:2px 6px;border-radius:4px;">@(_result is not null ? "Active" : "Auto-routing")</span>
             </div>
-            <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">Automatic fallback: Google Gemini &amp; Groq</p>
+            <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">Automatic fallback: NVIDIA NIM, Gemini, Groq, Ollama</p>
         </div>
 
         <!-- Model Identifier -->
         <div style="padding:0.75rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
             <p class="eyebrow" style="margin:0 0 0.25rem 0;">Hardener Model Identifier</p>
             <div style="font-family:monospace;font-size:0.88rem;color:#fcd34d;word-break:break-all;">
-                @(_result?.ModelUsed ?? "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
+                @(_result?.ModelUsed ?? "Dynamic multi-provider resolver")
             </div>
-            <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">30B parameters · Enterprise reasoning</p>
+            <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">Zero-trust prompt engineering with canary containment</p>
         </div>
 
         <!-- Red-Teaming ML Model Retrained Timestamp -->
         <div style="padding:0.75rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
             <p class="eyebrow" style="margin:0 0 0.25rem 0;">Red-Teaming ML Model Status</p>
             <div style="display:flex;align-items:center;gap:0.5rem;">
-                <strong style="font-size:0.95rem;color:#4ade80;">Last Retrained:</strong>
+                <strong style="font-size:0.95rem;color:@(_mlModelUpdatedAt is not null ? "#4ade80" : "#94a3b8");">Last Retrained:</strong>
                 <span style="font-size:0.88rem;color:#f1f5f9;">
-                    @(_mlModelUpdatedAt?.ToString("yyyy-MM-dd HH:mm") ?? "2026-10-06 18:32") UTC
+                    @(_mlModelUpdatedAt.HasValue ? _mlModelUpdatedAt.Value.ToString("yyyy-MM-dd HH:mm") + " UTC" : "Not synchronized")
                 </span>
             </div>
             <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">
-                Trained on <strong>@(_corpusPoints.ToString("N0"))</strong> Qdrant attack vectors · 100% CV Acc
+                @(_mlModelUpdatedAt.HasValue ? $"Trained on {_corpusPoints:N0} Qdrant attack vectors" : "Backend offline or not yet calibrated")
             </p>
         </div>
 
@@ -71,7 +71,7 @@
             <div style="display:flex;align-items:center;gap:0.5rem;">
                 <strong style="font-size:0.95rem;color:#cbd5e1;">Last Generated:</strong>
                 <span style="font-size:0.88rem;color:#f8fafc;">
-                    @(_result?.GeneratedAt.ToString("yyyy-MM-dd HH:mm:ss") ?? "Awaiting execution") UTC
+                    @(_result is not null ? _result.GeneratedAt.ToString("yyyy-MM-dd HH:mm:ss") + " UTC" : "Awaiting execution")
                 </span>
             </div>
             <p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">
@@ -240,7 +240,7 @@
     private HardenResponse? _result;
 
     private DateTimeOffset? _mlModelUpdatedAt;
-    private int _corpusPoints = 3695;
+    private int _corpusPoints = 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -250,13 +250,12 @@
             if (stats is not null)
             {
                 _mlModelUpdatedAt = stats.GeneratedAt;
-                _corpusPoints = stats.CorpusSize > 0 ? stats.CorpusSize : 3695;
+                _corpusPoints = stats.CorpusSize;
             }
         }
         catch
         {
-            // Fallback default
-            _mlModelUpdatedAt = DateTimeOffset.UtcNow.AddHours(-18);
+            _mlModelUpdatedAt = null;
         }
     }
 

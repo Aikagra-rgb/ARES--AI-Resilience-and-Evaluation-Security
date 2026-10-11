@@ -48,6 +48,28 @@ class TestGeminiEmbedder:
         assert call_kwargs[1]["json"]["outputDimensionality"] == 768
 
     @pytest.mark.asyncio
+    async def test_embed_text_ollama_local_preferred(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "embedding": [0.1, 0.2] * 384
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_resp
+
+        settings = Settings(prefer_local_embeddings=True, qdrant_vector_size=768)
+        embedder = GeminiEmbedder(settings=settings, http_client=mock_client)
+
+        vec = await embedder.embed_text("Test attack string")
+
+        assert len(vec) == 768
+        assert vec[0] == 0.1
+        mock_client.post.assert_called_once()
+        call_url = mock_client.post.call_args[0][0]
+        assert "api/embeddings" in call_url
+
+    @pytest.mark.asyncio
     async def test_embed_empty_text_raises_error(self):
         embedder = GeminiEmbedder()
         with pytest.raises(ValueError, match="empty text"):

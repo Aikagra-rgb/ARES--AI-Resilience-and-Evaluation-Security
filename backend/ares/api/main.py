@@ -55,6 +55,8 @@ _MODELS = [
     ModelConfigResponse(provider=AiProviderEnum.groq, id="mixtral-8x7b-32768",        display_name="Mixtral 8×7B",               context_window=32768,  is_available=True),
     ModelConfigResponse(provider=AiProviderEnum.gemini, id="gemini-2.0-flash",         display_name="Gemini 2.0 Flash",           context_window=1048576, is_available=True),
     ModelConfigResponse(provider=AiProviderEnum.nvidia_nim, id="nvidia/nemotron-4-340b-instruct", display_name="Nemotron 4 340B", context_window=4096, is_available=True),
+    ModelConfigResponse(provider=AiProviderEnum.ollama, id="llama3.1:8b", display_name="Llama 3.1 8B (Local RTX)", context_window=128000, is_available=True),
+    ModelConfigResponse(provider=AiProviderEnum.ollama, id="mistral:latest", display_name="Mistral 7B (Local RTX)", context_window=32768, is_available=True),
 ]
 
 @_models_router.get("/models", response_model=list[ModelConfigResponse])

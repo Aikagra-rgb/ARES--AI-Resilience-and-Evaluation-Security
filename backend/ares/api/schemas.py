@@ -22,6 +22,7 @@ class AiProviderEnum(str, Enum):
     groq      = "groq"
     gemini    = "gemini"
     nvidia_nim = "nvidia_nim"
+    ollama    = "ollama"
 
 
 class AttackCategoryEnum(str, Enum):

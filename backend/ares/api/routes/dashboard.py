@@ -411,4 +411,30 @@ async def get_provider_health() -> List[ProviderHealthResponse]:
         checked_at=now,
     ))
 
+    # Ollama (Local RTX GPU)
+    ollama_status = ProviderStatusEnum.unavailable
+    ollama_detail = "Offline"
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            r = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+        if r.status_code == 200:
+            models_list = r.json().get("models", [])
+            model_names = [m.get("name", "") for m in models_list]
+            ollama_status = ProviderStatusEnum.operational
+            ollama_detail = f"Local GPU ({', '.join(model_names[:3])})"
+        else:
+            ollama_status = ProviderStatusEnum.degraded
+            ollama_detail = f"HTTP {r.status_code}"
+    except Exception:
+        ollama_status = ProviderStatusEnum.unavailable
+        ollama_detail = "Local server not running"
+
+    providers.append(ProviderHealthResponse(
+        provider=AiProviderEnum.ollama,
+        name="Ollama (Local GPU)",
+        status=ollama_status,
+        detail=ollama_detail,
+        checked_at=now,
+    ))
+
     return providers

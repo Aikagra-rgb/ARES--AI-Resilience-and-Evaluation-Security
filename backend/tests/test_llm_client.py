@@ -87,6 +87,30 @@ async def test_llm_client_successful_groq_call(mock_settings):
 
 
 @pytest.mark.asyncio
+async def test_llm_client_successful_ollama_call(mock_settings):
+    client = LLMClient(settings=mock_settings)
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=make_mock_openai_response("Hello from Ollama", model="llama3.1:8b"),
+        request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"),
+    )
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+
+        res = await client.complete(prompt="Hi", provider="ollama")
+
+        assert isinstance(res, CompletionResponse)
+        assert res.text == "Hello from Ollama"
+        assert res.provider_used == "ollama"
+        assert res.model_used == "llama3.1:8b"
+
+        mock_post.assert_called_once()
+        call_url = mock_post.call_args[0][0]
+        assert call_url == "http://localhost:11434/v1/chat/completions"
+
+
+@pytest.mark.asyncio
 async def test_llm_client_successful_gemini_call(mock_settings):
     client = LLMClient(settings=mock_settings)
     mock_resp = httpx.Response(

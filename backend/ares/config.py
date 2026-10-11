@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     nvidia_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", alias="NVIDIA_BASE_URL")
     nvidia_default_model: str = Field(default="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", alias="NVIDIA_DEFAULT_MODEL")
 
+    # Ollama (Local on RTX GPU)
+    ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    ollama_default_model: str = Field(default="llama3.1:8b", alias="OLLAMA_DEFAULT_MODEL")
+    ollama_embedding_model: str = Field(default="nomic-embed-text", alias="OLLAMA_EMBEDDING_MODEL")
+    prefer_local_embeddings: bool = Field(default=False, alias="PREFER_LOCAL_EMBEDDINGS")
+
     # Vector DB (Qdrant)
     qdrant_url: str = Field(default="", alias="QDRANT_URL")
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
@@ -53,7 +59,7 @@ class Settings(BaseSettings):
     )
 
     # Resilience & Fallback Settings
-    fallback_order: List[str] = Field(default_factory=lambda: ["groq", "gemini", "nvidia"])
+    fallback_order: List[str] = Field(default_factory=lambda: ["groq", "gemini", "nvidia", "ollama"])
     max_retries: int = 3
     retry_min_wait_seconds: float = 0.5
     retry_max_wait_seconds: float = 4.0
