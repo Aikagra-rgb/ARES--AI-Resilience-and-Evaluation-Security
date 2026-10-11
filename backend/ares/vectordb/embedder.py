@@ -85,10 +85,12 @@ class GeminiEmbedder:
                     self._ollama_last_checked = now
                     if len(vec) == self.dimension:
                         return vec
-                    elif len(vec) > self.dimension:
-                        return vec[:self.dimension]
-                    else:
-                        return vec + [0.0] * (self.dimension - len(vec))
+                    logger.error(
+                        "Local embedding dimension %d does not match expected vector size %d; refusing to distort vector space.",
+                        len(vec),
+                        self.dimension,
+                    )
+                    return None
             self._ollama_available = False
             self._ollama_last_checked = now
             return None
@@ -123,10 +125,13 @@ class GeminiEmbedder:
                     for vec in embeddings:
                         if len(vec) == self.dimension:
                             result.append(vec)
-                        elif len(vec) > self.dimension:
-                            result.append(vec[:self.dimension])
                         else:
-                            result.append(vec + [0.0] * (self.dimension - len(vec)))
+                            logger.error(
+                                "Local batch embedding dimension %d does not match expected vector size %d.",
+                                len(vec),
+                                self.dimension,
+                            )
+                            return None
                     return result
             self._ollama_available = False
             self._ollama_last_checked = now

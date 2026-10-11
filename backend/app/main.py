@@ -30,6 +30,7 @@ from app.schemas import (
     ArenaSubmissionCreate,
 )
 from app.security import PayloadCipher, payload_expiry
+from ares.api.dependencies import verify_api_key
 from ares.api.routes import (
     corpus as ares_corpus,
     dashboard as ares_dashboard,
@@ -84,29 +85,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Unified ARES Vector Security, ML Analytics, Hardening, and Gateway Routers
-app.include_router(ares_dashboard.router)
-app.include_router(ares_stats.router)
-app.include_router(ares_search.router)
-app.include_router(ares_harden.router)
-app.include_router(ares_corpus.router)
-app.include_router(ares_tests.router)
-app.include_router(ares_gateway.router)
+# Unified ARES Vector Security, ML Analytics, Hardening, and Gateway Routers.
+# Every one of these routes is protected by API-key authentication; only the health
+# probes below are public.
+_auth = [Depends(verify_api_key)]
+app.include_router(ares_dashboard.router, dependencies=_auth)
+app.include_router(ares_stats.router, dependencies=_auth)
+app.include_router(ares_search.router, dependencies=_auth)
+app.include_router(ares_harden.router, dependencies=_auth)
+app.include_router(ares_corpus.router, dependencies=_auth)
+app.include_router(ares_tests.router, dependencies=_auth)
+app.include_router(ares_gateway.router, dependencies=_auth)
 
 # Explicit v1 aliases for frontend compatibility
-@app.get("/api/v1/stats", tags=["stats"])
+@app.get("/api/v1/stats", tags=["stats"], dependencies=_auth)
 async def v1_stats():
     return await ares_stats.get_stats()
 
-@app.post("/api/v1/stats/retrain", tags=["stats"])
+@app.post("/api/v1/stats/retrain", tags=["stats"], dependencies=_auth)
 async def v1_stats_retrain():
     return await ares_stats.retrain_stats()
 
-@app.post("/api/v1/search", tags=["search"])
+@app.post("/api/v1/search", tags=["search"], dependencies=_auth)
 async def v1_search(req: ares_search.SearchRequest):
     return await ares_search.search_attacks(req)
 
-@app.post("/api/v1/harden", tags=["harden"])
+@app.post("/api/v1/harden", tags=["harden"], dependencies=_auth)
 async def v1_harden(req: ares_harden.HardenRequest):
     return await ares_harden.harden_prompt(req)
 
@@ -576,7 +580,7 @@ def dashboard_categories(
     return {"items": items}
 
 
-@app.get("/api/v1/incidents/recent")
+@app.get("/api/v1/incidents/recent", dependencies=[Depends(get_current_user)])
 def recent_incidents() -> dict:
     # Runtime enforcement incidents are added with the enforcement gateway, not fabricated here.
     return {"items": [], "next_cursor": None}
@@ -652,7 +656,7 @@ def hardening_comparison(user: CurrentUser = Depends(get_current_user), db: Sess
     }
 
 
-@app.get("/api/v1/providers/health")
+@app.get("/api/v1/providers/health", dependencies=[Depends(get_current_user)])
 def provider_health() -> dict:
     openai_configured = orchestrator._provider_is_configured("OpenAI")
     return {
@@ -670,7 +674,7 @@ def provider_health() -> dict:
     }
 
 
-@app.get("/api/v1/models")
+@app.get("/api/v1/models", dependencies=[Depends(get_current_user)])
 def models(provider: str) -> dict:
     if provider != "OpenAI":
         return {"items": []}

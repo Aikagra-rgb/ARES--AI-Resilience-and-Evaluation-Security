@@ -57,6 +57,11 @@ class RobustnessReport:
         """True if the prompt withstood all adversarial probes."""
         return self.total_breaches == 0
 
+    @property
+    def attack_success_rate(self) -> float:
+        """Alias for overall_asr to prevent legacy routing and report consumer breakage."""
+        return self.overall_asr
+
     def summary_table(self) -> str:
         """Render a clean text table of the evaluation breakdown."""
         lines = [

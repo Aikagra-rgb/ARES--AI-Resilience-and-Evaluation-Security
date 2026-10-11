@@ -55,7 +55,15 @@ class QdrantStore:
         client: Optional[QdrantClient] = None,
     ):
         self.settings = settings or default_settings
-        self.collection_name = self.settings.qdrant_collection
+        # Prevent embedding-space mismatch:
+        # If local embeddings (e.g. nomic-embed-text) are active, isolate vectors
+        # in a model-specific collection namespace rather than comparing against Gemini vectors.
+        if getattr(self.settings, "prefer_local_embeddings", False) and self.settings.qdrant_collection == "ares_attacks":
+            base_col = self.settings.qdrant_collection
+            model_tag = getattr(self.settings, "ollama_embedding_model", "local").replace("-", "_").replace(":", "_")
+            self.collection_name = f"{base_col}_{model_tag}"
+        else:
+            self.collection_name = self.settings.qdrant_collection
         self.vector_size = self.settings.qdrant_vector_size
         self.embedder = embedder or GeminiEmbedder(settings=self.settings)
 

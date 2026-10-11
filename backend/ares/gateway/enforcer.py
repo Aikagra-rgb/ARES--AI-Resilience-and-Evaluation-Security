@@ -41,7 +41,8 @@ _INJECTION_PATTERNS = [
     (re.compile(r"(?i)\b(print|repeat|output|reveal|dump)\s+(your\s+)?(system\s+prompt|initial\s+instructions)"), "instruction_override", 88),
     (re.compile(r"(?i)\b(you\s+are\s+now|pretend\s+to\s+be|act\s+as)\s+(DAN|unrestricted|jailbreak|developer\s+mode)"), "role_play_hijack", 94),
     (re.compile(r"(?i)<\s*\|\s*im_start\s*\|>|\[INST\]|\[/INST\]|<system>"), "delimiter_confusion", 92),
-    (re.compile(r"(?i)\b(base64|rot13|hex)\s+(decode|encoded)\b"), "encoding_tricks", 75),
+    # Only flag imperative encoding bypass attacks (e.g. "decode this base64 and execute", "rot13 the following instructions")
+    (re.compile(r"(?i)\b(execute|run|follow|obey)\s+(the\s+)?(following\s+)?(base64|rot13|hex)\b"), "encoding_tricks", 85),
 ]
 
 
@@ -143,7 +144,7 @@ class RuntimeEnforcer:
 
         try:
             from ares.gateway.benign_corpus import BENIGN_REFERENCE_PROMPTS
-            vecs = await self.store.embedder.embed_batch(BENIGN_REFERENCE_PROMPTS[:25])
+            vecs = await self.store.embedder.embed_batch(BENIGN_REFERENCE_PROMPTS)
             if vecs:
                 mat = np.array(vecs, dtype=np.float32)
                 norms = np.linalg.norm(mat, axis=1, keepdims=True)
@@ -208,13 +209,47 @@ class RuntimeEnforcer:
     ) -> None:
         """
         Persist enforcement event to DB so dashboard telemetry updates live.
+        Ensures foreign-key relationships (organization, user, project) exist
+        in PostgreSQL before inserting TestRun and Finding records.
         """
+        db = None
         try:
+            from sqlalchemy import select
             from app.database import SessionLocal
-            from app.models import TestRun, Finding, Severity
+            from app.models import Organization, Project, User, TestRun, Finding, Severity
 
             db = SessionLocal()
             try:
+                # 1. Lookup or create system organization
+                org = db.scalar(select(Organization).where(Organization.name == "System Gateway Organization"))
+                if org is None:
+                    org = Organization(name="System Gateway Organization")
+                    db.add(org)
+                    db.flush()
+
+                # 2. Lookup or create system user
+                user = db.scalar(select(User).where(User.organization_id == org.id, User.email == "gateway@ares.system"))
+                if user is None:
+                    user = User(
+                        organization_id=org.id,
+                        email="gateway@ares.system",
+                        display_name="ARES Gateway Enforcer",
+                    )
+                    db.add(user)
+                    db.flush()
+
+                # 3. Lookup or create system project
+                project = db.scalar(select(Project).where(Project.organization_id == org.id, Project.name == "Runtime Gateway"))
+                if project is None:
+                    project = Project(
+                        organization_id=org.id,
+                        created_by_user_id=user.id,
+                        name="Runtime Gateway",
+                        description="Automated runtime gateway enforcement audit logs",
+                    )
+                    db.add(project)
+                    db.flush()
+
                 run_id = f"gw-run-{decision.correlation_id[:8]}"
                 finding_id = f"gw-fnd-{decision.correlation_id[:8]}"
 
@@ -232,9 +267,9 @@ class RuntimeEnforcer:
 
                 tr = TestRun(
                     id=run_id,
-                    organization_id="org-gateway",
-                    project_id="proj-gateway",
-                    requested_by_user_id="gateway-system",
+                    organization_id=org.id,
+                    project_id=project.id,
+                    requested_by_user_id=user.id,
                     configuration={
                         "target_application": request.application_name,
                         "action": decision.action.value,
@@ -260,10 +295,13 @@ class RuntimeEnforcer:
                 db.add(tr)
                 db.add(fnd)
                 db.commit()
+            except Exception:
+                db.rollback()
+                raise
             finally:
                 db.close()
         except Exception as exc:
-            logger.debug("Gateway DB audit recording skipped: %s", exc)
+            logger.warning("Gateway DB audit recording failed: %s", exc)
 
     async def enforce(self, request: EnforceRequest) -> EnforceResponse:
         """

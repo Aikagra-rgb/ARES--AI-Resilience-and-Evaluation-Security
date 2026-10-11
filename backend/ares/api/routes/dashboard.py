@@ -190,25 +190,21 @@ async def get_dashboard_trends() -> List[TrendPoint]:
                 incidents=m["incidents"],
             ))
         else:
-            # Baseline activity grounded in historical corpus distributions
-            day_hash = (d.year * 372 + d.month * 31 + d.day) % 23
-            tested = 65 + (day_hash * 3)
-            successful = max(2, tested // 14)
-            blocked = tested - successful
-            incidents = 1 if (day_hash % 4 == 0) else 0
+            # Honest zero-activity report when no evaluations occurred on this date
             points.append(TrendPoint(
                 date=d_str,
-                tested=tested,
-                blocked=blocked,
-                successful=successful,
-                incidents=incidents,
+                tested=0,
+                blocked=0,
+                successful=0,
+                incidents=0,
             ))
     return points
 
 
 @router.get("/categories", response_model=List[CategoryMetricResponse])
 async def get_category_metrics() -> List[CategoryMetricResponse]:
-    """Per-category attack stats dynamically loaded from active corpus telemetry."""
+    """Per-category attack stats dynamically aggregated from corpus benchmarks and live evaluation findings."""
+    result: List[CategoryMetricResponse] = []
     ml_report = _load_json("ml_vector_analysis_report.json")
     category_counts = ml_report.get("category_counts", {
         "context_smuggling": 1271,
@@ -218,32 +214,42 @@ async def get_category_metrics() -> List[CategoryMetricResponse]:
         "delimiter_confusion": 465,
     })
 
-    # Historical empirical ASR baseline per category
-    empirical_asr = {
-        "context_smuggling": 18,
-        "encoding_tricks": 12,
-        "role_play_hijack": 14,
-        "instruction_override": 11,
-        "delimiter_confusion": 9,
-    }
+    db_stats: dict[str, dict[str, int]] = {}
+    db = _get_db_session()
+    if db is not None:
+        try:
+            from app.models import Finding
+            findings = db.query(Finding).all()
+            for f in findings:
+                cat_key = f.category or "instruction_override"
+                if cat_key not in db_stats:
+                    db_stats[cat_key] = {"tested": 0, "successful": 0}
+                db_stats[cat_key]["tested"] += 1
+                if f.attack_succeeded:
+                    db_stats[cat_key]["successful"] += 1
+        except Exception:
+            pass
+        finally:
+            db.close()
 
-    result: List[CategoryMetricResponse] = []
     for cat, total in category_counts.items():
-        success_rate = empirical_asr.get(cat, 12)
-        successful = max(1, total * success_rate // 100)
+        live = db_stats.get(cat, {"tested": 0, "successful": 0})
+        total_tests = total + live["tested"]
+        succ = live["successful"]
+        rate = int((succ / total_tests) * 100) if total_tests > 0 else 0
         result.append(CategoryMetricResponse(
             category=cat,
-            tests=total,
-            successful=successful,
-            blocked=total - successful,
-            success_rate=success_rate,
+            tests=total_tests,
+            successful=succ,
+            blocked=total_tests - succ,
+            success_rate=rate,
         ))
     return result
 
 
 @router.get("/incidents", response_model=List[RuntimeIncident])
 async def get_recent_incidents() -> List[RuntimeIncident]:
-    """Recent high-severity incidents retrieved dynamically from database breach records with curated fallback."""
+    """Recent high-severity incidents retrieved dynamically from database breach records."""
     now = _now()
     incidents: List[RuntimeIncident] = []
 
@@ -283,62 +289,7 @@ async def get_recent_incidents() -> List[RuntimeIncident]:
         finally:
             db.close()
 
-    if len(incidents) < 5:
-        reference_incidents = [
-            RuntimeIncident(
-                id="INC-REF-001",
-                application="Helios Support Assistant",
-                category=AttackCategoryEnum.role_manipulation,
-                severity=SeverityEnum.high,
-                detected_at=now - timedelta(hours=2),
-                enforcement_action="Blocked & logged",
-                status=IncidentStatusEnum.resolved,
-                correlation_id=uuid.uuid4().hex[:12],
-            ),
-            RuntimeIncident(
-                id="INC-REF-002",
-                application="FinBot Advisor",
-                category=AttackCategoryEnum.indirect_prompt_injection,
-                severity=SeverityEnum.critical,
-                detected_at=now - timedelta(hours=6),
-                enforcement_action="Blocked & alerted",
-                status=IncidentStatusEnum.investigating,
-                correlation_id=uuid.uuid4().hex[:12],
-            ),
-            RuntimeIncident(
-                id="INC-REF-003",
-                application="Helios Support Assistant",
-                category=AttackCategoryEnum.encoding_or_obfuscation,
-                severity=SeverityEnum.medium,
-                detected_at=now - timedelta(hours=14),
-                enforcement_action="Sanitised",
-                status=IncidentStatusEnum.resolved,
-                correlation_id=uuid.uuid4().hex[:12],
-            ),
-            RuntimeIncident(
-                id="INC-REF-004",
-                application="CodeReview Bot",
-                category=AttackCategoryEnum.system_prompt_extraction,
-                severity=SeverityEnum.high,
-                detected_at=now - timedelta(hours=22),
-                enforcement_action="Blocked & logged",
-                status=IncidentStatusEnum.open,
-                correlation_id=uuid.uuid4().hex[:12],
-            ),
-            RuntimeIncident(
-                id="INC-REF-005",
-                application="FinBot Advisor",
-                category=AttackCategoryEnum.direct_prompt_injection,
-                severity=SeverityEnum.medium,
-                detected_at=now - timedelta(days=1, hours=3),
-                enforcement_action="Rate-limited",
-                status=IncidentStatusEnum.resolved,
-                correlation_id=uuid.uuid4().hex[:12],
-            ),
-        ]
-        needed = 5 - len(incidents)
-        incidents.extend(reference_incidents[:needed])
-
+    # Return honest database records; no synthetic placeholder padding
     return incidents
 
 

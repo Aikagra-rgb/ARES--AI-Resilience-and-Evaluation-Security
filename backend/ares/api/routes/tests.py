@@ -379,7 +379,7 @@ async def create_and_run_test(request: CreateTestRequest) -> TestRunResponse:
         duration_ms = int((completed_at - created_at).total_seconds() * 1000)
 
         # Derive security classification
-        asr = getattr(report, "attack_success_rate", 0.0)
+        asr = getattr(report, "overall_asr", getattr(report, "attack_success_rate", 0.0))
         risk_score = int(asr * 100)
         attack_succeeded = asr > 0.0
 

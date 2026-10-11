@@ -4,9 +4,10 @@ services:
     environment:
       POSTGRES_DB: ares
       POSTGRES_USER: ares
-      POSTGRES_PASSWORD: ares
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set-POSTGRES_PASSWORD-in-the-environment}
     ports:
-      - "5432:5432"
+      # Loopback only: the database must not be reachable from the network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - ares_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,15 +19,35 @@ services:
   api:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+psycopg://ares:ares@postgres:5432/ares
+      # Production posture. With ENVIRONMENT != development the API refuses to start unless
+      # auth is enabled, ARES_API_KEY is a unique >=24 char secret, header-only identity is off,
+      # and the fingerprint/encryption secrets have been set.
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      ARES_AUTH_ENABLED: "true"
+      ALLOW_DEV_IDENTITY: "false"
+      ARES_API_KEY: ${ARES_API_KEY:?set-ARES_API_KEY-to-a-unique-secret-of-24-plus-chars}
+      DATABASE_URL: postgresql+psycopg://ares:${POSTGRES_PASSWORD:?set-POSTGRES_PASSWORD-in-the-environment}@postgres:5432/ares
       AUTO_CREATE_SCHEMA: "false"
-      ALLOW_DEV_IDENTITY: "true"
       CORS_ORIGINS: http://localhost:5149,https://localhost:7149
       PROMPT_FINGERPRINT_SECRET: ${PROMPT_FINGERPRINT_SECRET:?set-in-backend-env}
       EXECUTION_PAYLOAD_ENCRYPTION_KEY: ${EXECUTION_PAYLOAD_ENCRYPTION_KEY:?set-in-backend-env}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set-in-backend-env}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      QDRANT_URL: ${QDRANT_URL:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ares_attacks}
+      # Local embeddings run on the host's Ollama (GPU). Each embedding model has its own Qdrant
+      # collection, so enabling this is only effective after `scripts/reembed_corpus.py` has built
+      # the matching collection; otherwise the gateway reports the vector shield as degraded.
+      PREFER_LOCAL_EMBEDDINGS: ${PREFER_LOCAL_EMBEDDINGS:-false}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      # Loopback only; put a TLS-terminating reverse proxy in front for anything else.
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
