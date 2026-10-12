@@ -216,16 +216,36 @@ class GeminiEmbedder:
                 await asyncio.sleep(wait)
 
         if retries > max_embed_retries:
-            logger.warning("Gemini embedContent quota exhausted (429). Falling back to deterministic semantic vector projection.")
-            return self._fallback_project_embeddings([text])[0]
-
-        raise EmbeddingError(f"Failed to generate embedding after {max_embed_retries} retries: {last_exception}")
+            logger.error(
+                "Gemini embedContent quota exhausted (429) and all retries failed. "
+                "Embedding service unavailable. This will degrade gateway effectiveness. "
+                "Configure OLLAMA_BASE_URL for local embeddings or check GEMINI_API_KEY quota."
+            )
+            if self.settings.embedding_fallback_to_gemini:
+                logger.warning("Falling back to deterministic projection (NOT semantically meaningful).")
+                return self._fallback_project_embeddings([text])[0]
+            raise EmbeddingError(
+                "Gemini embedding API rate limited and fallback disabled. "
+                "Set EMBEDDING_FALLBACK_TO_GEMINI=true to enable degraded mode, "
+                "or configure Ollama for local embeddings."
+            )
 
     def _fallback_project_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
-        High-speed deterministic semantic projection fallback (768-dim normalized vectors)
-        activated when external embedding APIs are rate-limited or offline.
+        DETERMINISTIC PROJECTION FALLBACK - NOT SEMANTICALLY MEANINGFUL.
+        
+        WARNING: This produces random-looking vectors based on text hashes.
+        Similarity searches WILL NOT WORK CORRECTLY with these vectors.
+        Only use when external embedding APIs are completely unavailable.
+        Enable with EMBEDDING_FALLBACK_TO_GEMINI=true (development only).
+        
+        For production, configure Ollama with nomic-embed-text for local embeddings.
         """
+        logger.critical(
+            "USING FALLBACK EMBEDDINGS - SEMANTIC SIMILARITY IS BROKEN. "
+            "Gateway vector shield will not function correctly. "
+            "Configure OLLAMA_BASE_URL or check GEMINI_API_KEY quota."
+        )
         try:
             from sklearn.feature_extraction.text import HashingVectorizer
             vectorizer = HashingVectorizer(n_features=self.dimension, norm="l2", alternate_sign=True)

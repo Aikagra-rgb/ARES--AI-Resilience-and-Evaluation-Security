@@ -359,6 +359,11 @@ class StatsResponse(BaseModel):
 # Runtime Enforcement Gateway schemas
 # ---------------------------------------------------------------------------
 
+MAX_PROMPT_LENGTH = 100000
+MAX_SYSTEM_PROMPT_LENGTH = 50000
+MAX_APPLICATION_NAME_LENGTH = 200
+
+
 class EnforceActionEnum(str, Enum):
     allow = "ALLOW"
     sanitize = "SANITIZE"
@@ -366,10 +371,15 @@ class EnforceActionEnum(str, Enum):
 
 
 class EnforceRequest(BaseModel):
-    prompt:           str
-    system_prompt:    Optional[str] = None
-    application_name: str = "ARES Protected Application"
-    correlation_id:   Optional[str] = None
+    prompt: str = Field(..., min_length=1, max_length=MAX_PROMPT_LENGTH, description="The user prompt to inspect")
+    system_prompt: Optional[str] = Field(None, max_length=MAX_SYSTEM_PROMPT_LENGTH, description="Optional system prompt")
+    application_name: str = Field(
+        ..., 
+        min_length=1, 
+        max_length=MAX_APPLICATION_NAME_LENGTH, 
+        description="Name of the protected application"
+    )
+    correlation_id: Optional[str] = Field(None, max_length=100, description="Optional correlation ID for tracing")
 
 
 class EnforceResponse(BaseModel):
@@ -387,14 +397,14 @@ class EnforceResponse(BaseModel):
 
 class ChatProxyMessage(BaseModel):
     role:    str
-    content: str
+    content: str = Field(..., min_length=1, max_length=MAX_PROMPT_LENGTH)
 
 
 class ChatProxyRequest(BaseModel):
-    model:            str = "groq"
-    messages:         List[ChatProxyMessage]
-    temperature:      float = 0.7
-    application_name: str = "ARES Chat Proxy"
+    model:            str = Field("groq", max_length=100)
+    messages:         List[ChatProxyMessage] = Field(..., min_length=1, max_length=50)
+    temperature:      float = Field(0.7, ge=0, le=2)
+    application_name: str = Field("ARES Chat Proxy", min_length=1, max_length=MAX_APPLICATION_NAME_LENGTH)
 
 
 class ChatProxyResponse(BaseModel):

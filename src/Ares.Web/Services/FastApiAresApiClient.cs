@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Ares.Web.Models;
@@ -16,19 +18,114 @@ public sealed class FastApiAresApiClient : IAresApiClient
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
     };
     static FastApiAresApiClient() => JsonOptions.Converters.Add(new JsonStringEnumConverter());
+    
     private readonly HttpClient _http;
     private readonly MockAresApiClient _learningFallback;
     private readonly ConcurrentDictionary<string, ArenaTestConfiguration> _submittedConfigurations = new();
+    private readonly string _signingKey;
+    private readonly string _keyId;
 
-    public FastApiAresApiClient(HttpClient http, MockAresApiClient learningFallback)
+    public FastApiAresApiClient(HttpClient http, MockAresApiClient learningFallback, string signingKey = null, string keyId = "ares-web")
     {
         _http = http;
         _learningFallback = learningFallback;
+        _signingKey = signingKey;
+        _keyId = keyId;
+    }
+
+    private (string timestamp, string nonce, string signature, string keyId) ComputeSignature(HttpRequestMessage request, string body = "")
+    {
+        if (string.IsNullOrEmpty(_signingKey))
+        {
+            return (DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), Guid.NewGuid().ToString("N"), "", _keyId);
+        }
+
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        var nonce = Guid.NewGuid().ToString("N");
+        var method = request.Method.Method;
+        var path = request.RequestUri.AbsolutePath;
+        var query = request.RequestUri.Query.TrimStart('?');
+        
+        // Create canonical request
+        var canonicalParts = new List<string>
+        {
+            method.ToUpperInvariant(),
+            path,
+            query,
+            ComputeSha256(body),
+            timestamp,
+            nonce
+        };
+        var canonical = string.Join("\n", canonicalParts);
+        
+        var signature = ComputeHmacSha256(canonical, _signingKey);
+        return (timestamp, nonce, signature, _keyId);
+    }
+
+    private string ComputeSha256(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return "";
+        
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private string ComputeHmacSha256(string message, string key)
+    {
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(key));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private HttpRequestMessage CreateSignedRequest(HttpMethod method, string url, object body = null)
+    {
+        var request = new HttpRequestMessage(method, url);
+        
+        string bodyJson = "";
+        if (body != null)
+        {
+            bodyJson = JsonSerializer.Serialize(body, JsonOptions);
+            request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
+        }
+        
+        var (timestamp, nonce, signature, keyId) = ComputeSignature(request, bodyJson);
+        
+        request.Headers.Add("X-Ares-Timestamp", timestamp);
+        request.Headers.Add("X-Ares-Nonce", nonce);
+        if (!string.IsNullOrEmpty(signature))
+        {
+            request.Headers.Add("X-Ares-Signature", signature);
+            request.Headers.Add("X-Ares-Key-Id", keyId);
+        }
+        
+        return request;
+    }
+
+    private async Task<HttpResponseMessage> SendSignedAsync(HttpMethod method, string url, object body = null, CancellationToken cancellationToken = default)
+    {
+        var request = CreateSignedRequest(method, url, body);
+        return await _http.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<T> SendSignedAsync<T>(HttpMethod method, string url, object body = null, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendSignedAsync(method, url, body, cancellationToken);
+        if (response.IsSuccessStatusCode)
+        {
+            return await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken)
+                ?? throw new InvalidOperationException($"ARES API returned an empty response for '{url}'.");
+        }
+
+        var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+        throw new HttpRequestException(
+            $"ARES API '{url}' returned {(int)response.StatusCode}: {detail}", null, response.StatusCode);
     }
 
     public async Task<CreateTestResponse> CreateTestAsync(CreateTestRequest request, CancellationToken cancellationToken)
     {
-        using var response = await _http.PostAsJsonAsync("api/v1/tests", new { configuration = request.Configuration }, JsonOptions, cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Post, "api/v1/tests", new { configuration = request.Configuration }, cancellationToken);
         var body = await ReadAsync<ApiCreateTestResponse>(response, cancellationToken);
         _submittedConfigurations[body.TestId] = CopyConfiguration(request.Configuration);
         return new CreateTestResponse(body.TestId, ParseStatus(body.Status), body.CorrelationId, body.CreatedAt);
@@ -36,7 +133,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
 
     public async Task<TestRun?> GetTestAsync(string testId, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync($"api/v1/tests/{Uri.EscapeDataString(testId)}", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/tests/{Uri.EscapeDataString(testId)}", cancellationToken: cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         var body = await ReadAsync<ApiTestRun>(response, cancellationToken);
         return ToTestRun(body);
@@ -66,14 +163,14 @@ public sealed class FastApiAresApiClient : IAresApiClient
 
     public async Task<CancelTestResponse> CancelTestAsync(string testId, CancellationToken cancellationToken)
     {
-        using var response = await _http.PostAsync($"api/v1/tests/{Uri.EscapeDataString(testId)}/cancel", null, cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Post, $"api/v1/tests/{Uri.EscapeDataString(testId)}/cancel", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiCancelTestResponse>(response, cancellationToken);
         return new CancelTestResponse(body.TestId, ParseStatus(body.Status), body.CorrelationId);
     }
 
     public async Task<IReadOnlyList<RecentTestItem>> GetRecentTestsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/tests/recent", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/tests/recent", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiRecentTests>(response, cancellationToken);
         return body.Items.Select(item => new RecentTestItem(item.Id, item.Timestamp, ParseCategory(item.Category), ParseProvider(item.Provider), item.Model, item.RiskScore, ParseStatus(item.Status))).ToList();
     }
@@ -83,49 +180,49 @@ public sealed class FastApiAresApiClient : IAresApiClient
 
     public async Task<DashboardSummary> GetDashboardSummaryAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/dashboard/summary", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/dashboard/summary", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiDashboardSummary>(response, cancellationToken);
         return new DashboardSummary(body.Metrics.Select(metric => new MetricValue(metric.Label, metric.Value, metric.Change, metric.Trend, ParseSeverity(metric.Status), metric.Description)).ToList(), body.CorpusSize, body.ProtectedApplications, body.GeneratedAt, body.IsPartial);
     }
 
     public async Task<IReadOnlyList<TrendPoint>> GetDashboardTrendsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/dashboard/trends", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/dashboard/trends", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiTrends>(response, cancellationToken);
         return body.Points.Select(point => new TrendPoint(point.Date, point.Tested, point.Blocked, point.Successful, point.Incidents)).ToList();
     }
 
     public async Task<IReadOnlyList<CategoryMetric>> GetCategoryMetricsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/dashboard/categories", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/dashboard/categories", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiCategories>(response, cancellationToken);
         return body.Items.Select(item => new CategoryMetric(ParseCategory(item.Category), item.Tests, item.Successful, item.Blocked, item.SuccessRate)).ToList();
     }
 
     public async Task<IReadOnlyList<RuntimeIncident>> GetRecentIncidentsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/incidents/recent", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/incidents/recent", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiIncidents>(response, cancellationToken);
         return body.Items.Select(item => new RuntimeIncident(item.Id, item.Application, ParseCategory(item.Category), ParseSeverity(item.Severity), item.DetectedAt, item.EnforcementAction, Enum.Parse<IncidentStatus>(item.Status, true), item.CorrelationId)).ToList();
     }
 
     public async Task<HardeningComparison> GetHardeningComparisonAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/hardening/comparison", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/hardening/comparison", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiHardening>(response, cancellationToken);
         return new HardeningComparison(body.BaselineSuccessRate, body.HardenedSuccessRate, body.ImprovementPoints, body.TestsIncluded, body.LastCycle ?? DateOnly.MinValue);
     }
 
     public async Task<IReadOnlyList<ProviderHealth>> GetProviderHealthAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/providers/health", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/providers/health", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiProviders>(response, cancellationToken);
         return body.Items.Select(item => new ProviderHealth(string.IsNullOrEmpty(item.Provider) ? null : ParseProvider(item.Provider), item.Name, Enum.Parse<ProviderStatus>(item.Status, true), item.Detail, item.CheckedAt)).ToList();
     }
 
     public async Task<IReadOnlyList<ModelConfiguration>> GetModelsAsync(AiProvider provider, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync($"api/v1/models?provider={Uri.EscapeDataString(provider.ToString())}", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/models?provider={Uri.EscapeDataString(provider.ToString())}", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiModels>(response, cancellationToken);
         return body.Items.Select(item => new ModelConfiguration(ParseProvider(item.Provider), item.Id, item.DisplayName, item.ContextWindow, item.IsAvailable)).ToList();
     }
@@ -137,40 +234,40 @@ public sealed class FastApiAresApiClient : IAresApiClient
         if (tier.HasValue) query.Add($"tier={tier.Value}");
         if (category.HasValue) query.Add($"category={category.Value}");
         if (!string.IsNullOrWhiteSpace(search)) query.Add($"search={Uri.EscapeDataString(search)}");
-        using var response = await _http.GetAsync($"api/v1/arena/challenges?{string.Join('&', query)}", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/arena/challenges?{string.Join('&', query)}", cancellationToken: cancellationToken);
         var body = await ReadAsync<ApiChallengePage>(response, cancellationToken);
         return new ChallengePageResult(body.Items.Select(ToChallenge).ToList(), body.Progress.Select(ToProgress).ToList(), body.TotalCount, body.Page, body.PageSize);
     }
 
     public async Task<Challenge?> GetChallengeAsync(string challengeId, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync($"api/v1/arena/challenges/{Uri.EscapeDataString(challengeId)}", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/arena/challenges/{Uri.EscapeDataString(challengeId)}", cancellationToken: cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         return ToChallenge(await ReadAsync<ApiChallenge>(response, cancellationToken));
     }
 
     public async Task<IReadOnlyList<ChallengeRoom>> GetRoomsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/arena/rooms", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/arena/rooms", cancellationToken: cancellationToken);
         return (await ReadAsync<ApiRooms>(response, cancellationToken)).Items.Select(ToRoom).ToList();
     }
 
     public async Task<ChallengeRoom?> GetRoomAsync(string roomId, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync($"api/v1/arena/rooms/{Uri.EscapeDataString(roomId)}", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/arena/rooms/{Uri.EscapeDataString(roomId)}", cancellationToken: cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         return ToRoom(await ReadAsync<ApiRoom>(response, cancellationToken));
     }
 
     public async Task<IReadOnlyList<LearningPath>> GetLearningPathsAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/arena/paths", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/arena/paths", cancellationToken: cancellationToken);
         return (await ReadAsync<ApiPaths>(response, cancellationToken)).Items.Select(item => new LearningPath(item.Id, item.Name, item.Description, item.RoomIds, Enum.Parse<BadgeType>(item.BadgeAwarded, true), item.Colour)).ToList();
     }
 
     public async Task<SubmitChallengeResponse> SubmitChallengeAsync(SubmitChallengeRequest request, CancellationToken cancellationToken)
     {
-        using var response = await _http.PostAsJsonAsync("api/v1/arena/submissions", new { challenge_id = request.ChallengeId, test_run_id = request.TestRunId }, JsonOptions, cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Post, "api/v1/arena/submissions", new { challenge_id = request.ChallengeId, test_run_id = request.TestRunId }, cancellationToken);
         var body = await ReadAsync<ApiSubmitChallenge>(response, cancellationToken);
         return new SubmitChallengeResponse(ToSubmission(body.Submission), body.BadgeUnlocked, null, body.NextChallengeId);
     }
@@ -241,6 +338,38 @@ public sealed class FastApiAresApiClient : IAresApiClient
     /// Calls the first route that exists (alternates are only tried on HTTP 404) and throws a
     /// descriptive <see cref="HttpRequestException"/> on any failure. Never returns mock data.
     /// </summary>
+    /// <summary>
+    /// Signed version of SendLiveAsync that adds HMAC signatures to requests.
+    /// </summary>
+    private async Task<T> SendSignedAsync<T>(HttpMethod method, string[] routes, object? body, CancellationToken cancellationToken)
+    {
+        HttpRequestException? failure = null;
+        foreach (var route in routes)
+        {
+            try
+            {
+                using var message = CreateSignedRequest(method, route, body);
+
+                using var response = await _http.SendAsync(message, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken)
+                        ?? throw new InvalidOperationException($"ARES API returned an empty response for '{route}'.");
+                }
+
+                var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                failure = new HttpRequestException(
+                    $"ARES API '{route}' returned {(int)response.StatusCode}: {Truncate(detail)}", null, response.StatusCode);
+                if (response.StatusCode != HttpStatusCode.NotFound) break;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode is null)
+            {
+                throw UnreachableError(ex);
+            }
+        }
+        throw failure ?? new HttpRequestException("ARES API request failed.");
+    }
+
     private async Task<T> SendLiveAsync<T>(HttpMethod method, string[] routes, object? body, CancellationToken cancellationToken)
     {
         HttpRequestException? failure = null;

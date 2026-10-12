@@ -81,7 +81,7 @@ class QdrantStore:
                 try:
                     self._client = QdrantClient(
                         url=self.settings.qdrant_url,
-                        api_key=self.settings.qdrant_api_key or None,
+                        api_key=self.settings.qdrant_api_key.get_secret_value() if self.settings.qdrant_api_key else None,
                         timeout=min(self.settings.request_timeout_seconds, 5.0),
                     )
                     self._client.get_collections()

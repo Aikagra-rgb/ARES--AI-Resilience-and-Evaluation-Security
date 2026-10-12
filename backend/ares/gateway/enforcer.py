@@ -2,9 +2,12 @@
 ARES Runtime Enforcement Engine.
 
 Provides multi-layer real-time defense for production LLM endpoints:
+  - Layer 0: Structural Attack Detector (deterministic, <1ms)
   - Layer 1: Heuristic regex & canary token verification (<1ms)
+  - Layer 1.5: Fast ML Classifier (<1ms)
   - Layer 2: Semantic Vector Shield against 3,695 Qdrant attack vectors (<25ms)
-  - Layer 3: Policy Decision (ALLOW, SANITIZE, BLOCK)
+  - Layer 2.5: Contrastive Benign Margin Scoring
+  - Layer 3: Policy Decision (ALLOW, SANITIZE, BLOCK) with Consensus
   - Layer 4: Audit trail logging to DB for live dashboard telemetry
 """
 
@@ -30,9 +33,36 @@ from ares.api.schemas import (
 from ares.config import Settings, settings as default_settings
 from ares.llm.client import LLMClient
 from ares.mappings import to_frontend_category
+from ares.security.structural_detector import (
+    StructuralAttackDetector,
+    DetectionResult,
+    Decision as StructuralDecision,
+    SeverityLevel as StructuralSeverity,
+    AttackType,
+)
+from ares.security.consensus import (
+    ConsensusEngine,
+    ConsensusResult,
+    LayerDecision,
+    DecisionSource,
+    Decision,
+    WeightedVotingProtocol,
+)
 from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
+
+# Audit failure counter for monitoring (replace with Prometheus Counter in production)
+class _SimpleCounter:
+    def __init__(self):
+        self._count = 0
+    def inc(self):
+        self._count += 1
+    @property
+    def value(self):
+        return self._count
+
+_audit_failure_counter = _SimpleCounter()
 
 # Heuristic patterns indicative of prompt injection & system prompt extraction
 _INJECTION_PATTERNS = [
@@ -49,20 +79,54 @@ _INJECTION_PATTERNS = [
 class RuntimeEnforcer:
     """
     Real-time security gateway engine protecting LLM endpoints.
+    
+    Multi-layer defense with consensus-based decision making:
+    - Layer 0: Structural Attack Detector (deterministic patterns)
+    - Layer 1: Heuristic regex & canary token verification
+    - Layer 1.5: Fast ML Classifier (<1ms)
+    - Layer 2: Semantic Vector Similarity (<20ms)
+    - Layer 2.5: Contrastive Benign Margin Scoring
+    - Layer 3: Policy Decision (ALLOW, SANITIZE, BLOCK) with Consensus
+    
+    Supports per-tenant/organization configurations for multi-tenant deployments.
     """
 
     def __init__(
         self,
         settings: Optional[Settings] = None,
         store: Optional[QdrantStore] = None,
+        structural_detector: Optional[StructuralAttackDetector] = None,
+        consensus_engine: Optional[ConsensusEngine] = None,
+        organization_id: Optional[str] = None,
     ):
         self.settings = settings or default_settings
+        self.organization_id = organization_id or "default"
         self.store = store or QdrantStore(settings=self.settings)
+        
+        # Organization-specific collection naming
+        # We'll handle this by prefixing collection names in enforcer methods
+        if self.organization_id != "default":
+            # Store reference for later use in collection-name methods
+            self._org_collection_prefix = f"org_{self.organization_id}_"
+        else:
+            self._org_collection_prefix = ""
+        
+        # Layer 0: Structural Detector (always runs, deterministic)
+        self.structural_detector = structural_detector or StructuralAttackDetector(
+            severity_threshold=StructuralSeverity.LOW,
+            canary_token=self.settings.gateway_canary_token if self.settings.gateway_canary_token else None,
+        )
+        
+        # Consensus engine for multi-layer decisions
+        self.consensus_engine = consensus_engine or ConsensusEngine(protocol="weighted")
+        
+        # ML Classifier (optional)
         try:
             from ares.evaluation.ml_stats import AttackClassifierBundle
             self._ml_classifier = AttackClassifierBundle.load()
         except Exception:
             self._ml_classifier = None
+        
         self._benign_vectors: Optional[np.ndarray] = None
 
     def _inspect_heuristics(self, text: str) -> Tuple[bool, Optional[str], int, str]:
@@ -211,24 +275,41 @@ class RuntimeEnforcer:
         Persist enforcement event to DB so dashboard telemetry updates live.
         Ensures foreign-key relationships (organization, user, project) exist
         in PostgreSQL before inserting TestRun and Finding records.
+        
+        Gracefully handles missing/unavailable database (e.g., in tests).
         """
-        db = None
+        import sys
+        print("DEBUG AUDIT: Starting _record_audit_event", flush=True)
         try:
             from sqlalchemy import select
             from app.database import SessionLocal
             from app.models import Organization, Project, User, TestRun, Finding, Severity
+            from sqlalchemy.exc import OperationalError, DisconnectionError
+        except ImportError:
+            # App models not available (e.g., in isolated tests)
+            print("DEBUG AUDIT: App models not available, skipping", flush=True)
+            return
 
+        print("DEBUG AUDIT: Creating SessionLocal", flush=True)
+        db = None
+        try:
             db = SessionLocal()
+            print("DEBUG AUDIT: SessionLocal created", flush=True)
             try:
                 # 1. Lookup or create system organization
+                print("DEBUG AUDIT: Querying organization", flush=True)
                 org = db.scalar(select(Organization).where(Organization.name == "System Gateway Organization"))
+                print(f"DEBUG AUDIT: org={org}", flush=True)
                 if org is None:
                     org = Organization(name="System Gateway Organization")
                     db.add(org)
                     db.flush()
+                    print("DEBUG AUDIT: Created org", flush=True)
 
                 # 2. Lookup or create system user
+                print("DEBUG AUDIT: Querying user", flush=True)
                 user = db.scalar(select(User).where(User.organization_id == org.id, User.email == "gateway@ares.system"))
+                print(f"DEBUG AUDIT: user={user}", flush=True)
                 if user is None:
                     user = User(
                         organization_id=org.id,
@@ -237,9 +318,12 @@ class RuntimeEnforcer:
                     )
                     db.add(user)
                     db.flush()
+                    print("DEBUG AUDIT: Created user", flush=True)
 
                 # 3. Lookup or create system project
+                print("DEBUG AUDIT: Querying project", flush=True)
                 project = db.scalar(select(Project).where(Project.organization_id == org.id, Project.name == "Runtime Gateway"))
+                print(f"DEBUG AUDIT: project={project}", flush=True)
                 if project is None:
                     project = Project(
                         organization_id=org.id,
@@ -249,6 +333,7 @@ class RuntimeEnforcer:
                     )
                     db.add(project)
                     db.flush()
+                    print("DEBUG AUDIT: Created project", flush=True)
 
                 run_id = f"gw-run-{decision.correlation_id[:8]}"
                 finding_id = f"gw-fnd-{decision.correlation_id[:8]}"
@@ -295,92 +380,317 @@ class RuntimeEnforcer:
                 db.add(tr)
                 db.add(fnd)
                 db.commit()
+                print("DEBUG AUDIT: Committed successfully", flush=True)
+            except (OperationalError, DisconnectionError) as exc:
+                # Database not available - log and continue without audit
+                print(f"DEBUG AUDIT: DB connection error: {exc}", flush=True)
+                return
             except Exception:
                 db.rollback()
                 raise
             finally:
                 db.close()
+                print("DEBUG AUDIT: DB closed", flush=True)
+        except (OperationalError, DisconnectionError) as exc:
+            # Database not available - log and continue without audit
+            print(f"DEBUG AUDIT: DB connection error (outer): {exc}", flush=True)
+            return
         except Exception as exc:
-            logger.warning("Gateway DB audit recording failed: %s", exc)
+            # Log at ERROR level so it appears in alerting systems
+            # But don't fail the request if DB is unavailable
+            print(f"DEBUG AUDIT: Unexpected error: {exc}", flush=True)
+            logger.error(
+                "Gateway DB audit recording failed - audit events may be lost: %s",
+                exc,
+                extra={"correlation_id": getattr(decision, 'correlation_id', 'unknown')}
+            )
+            # Increment failure counter for monitoring (could be connected to Prometheus)
+            _audit_failure_counter.inc() if '_audit_failure_counter' in globals() else None
 
     async def enforce(self, request: EnforceRequest) -> EnforceResponse:
         """
-        Execute full multi-tier inspection pipeline on incoming prompt.
+        Execute full multi-tier inspection pipeline with consensus-based decision making.
+        
+        Layers:
+        - Layer 0: Structural Attack Detector (deterministic, <1ms)
+        - Layer 1: Heuristic regex & canary token verification
+        - Layer 1.5: Fast ML Classifier (<1ms)
+        - Layer 2: Semantic Vector Match (<20ms)
+        - Layer 2.5: Contrastive Benign Margin Scoring
+        - Layer 3: Consensus Policy Decision
         """
         t0 = time.perf_counter()
         correlation_id = request.correlation_id or uuid.uuid4().hex[:12]
-
-        # Tier 1: Heuristics & Canary
+        
+        # ========== Layer 0: Structural Attack Detector (NEW - always runs first) ==========
+        structural_start = time.perf_counter()
+        structural_result: DetectionResult = self.structural_detector.detect(request.prompt)
+        structural_latency = round((time.perf_counter() - structural_start) * 1000, 2)
+        
+        # Fast-path: Critical structural detections block immediately
+        if structural_result.decision == StructuralDecision.BLOCK:
+            critical_detections = [d for d in structural_result.detections if d.severity == StructuralSeverity.CRITICAL]
+            technique = critical_detections[0].attack_type.value if critical_detections else "structural_attack"
+            
+            decision = EnforceResponse(
+                action=EnforceActionEnum.block,
+                risk_score=95,
+                severity=SeverityEnum.critical,
+                matched_technique=technique,
+                vector_similarity=0.0,
+                sanitized_prompt=None,
+                explanation=f"Blocked by Layer-0 Structural Detector: {critical_detections[0].description if critical_detections else 'Critical structural pattern detected'}",
+                latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+                correlation_id=correlation_id,
+                timestamp=datetime.now(timezone.utc),
+            )
+            self._record_audit_event(decision, request)
+            return decision
+        
+        # ========== Layer 1: Heuristics & Canary (existing) ==========
         heur_triggered, heur_tech, heur_score, heur_expl = self._inspect_heuristics(request.prompt)
 
-        # Tier 1.5: Fast ML Classifier (<1ms)
+        # ========== Layer 1.5: Fast ML Classifier (<1ms) ==========
         ml_triggered, ml_tech, ml_conf, ml_expl = self._inspect_ml_classifier(request.prompt)
 
-        # Tier 2: Semantic Vector Match (<20ms)
+        # ========== Layer 2: Semantic Vector Match (<20ms) ==========
         sim_score, vec_tech, _ = await self._inspect_vector_similarity(request.prompt)
 
-        # Tier 2.5: Contrastive Benign Margin Scoring (Eliminates False-Positive Trap)
+        # ========== Layer 2.5: Contrastive Benign Margin Scoring ==========
         sim_benign, margin = await self._compute_benign_contrast(request.prompt, sim_score)
-
-        # Tier 3: Policy Decision
-        matched_technique = heur_tech or vec_tech or ml_tech or "standard_input"
-
-        block_thresh = self.settings.gateway_block_threshold
-        sanitize_thresh = self.settings.gateway_sanitize_threshold
-
-        action: EnforceActionEnum
-        severity: SeverityEnum
-        explanation: str
-        sanitized_prompt: Optional[str] = None
-
-        if heur_triggered and heur_score >= 90:
-            action = EnforceActionEnum.block
-            severity = SeverityEnum.critical
-            explanation = f"Blocked by Layer-1 Heuristics: {heur_expl}"
-            risk_score = heur_score
-        elif margin <= -0.05 and sim_benign >= 0.70 and not heur_triggered:
-            # Contrastive suppression: Prompt is substantially closer to benign usage than attacks
-            action = EnforceActionEnum.allow
-            severity = SeverityEnum.safe
-            explanation = f"Allowed by Contrastive Shield: Benign similarity ({sim_benign:.3f}) exceeds attack similarity ({sim_score:.3f}, margin: {margin:+.3f})."
-            risk_score = max(0, int((sim_score - sim_benign) * 100))
-            matched_technique = "benign_developer_query"
-        elif sim_score >= block_thresh and margin >= 0.05:
-            action = EnforceActionEnum.block
-            severity = SeverityEnum.high
-            explanation = f"Blocked by Layer-2 Vector Shield: Cosine similarity {sim_score:.3f} >= threshold {block_thresh} ({matched_technique}, margin: {margin:+.3f})."
-            risk_score = int(sim_score * 100)
-        elif (heur_triggered and heur_score >= 70) or sim_score >= sanitize_thresh or (ml_triggered and ml_conf >= 0.85 and margin > 0.0):
-            action = EnforceActionEnum.sanitize
-            severity = SeverityEnum.medium
-            explanation = f"Sanitized by Policy: Elevated similarity {sim_score:.3f} (margin: {margin:+.3f}) or adversarial pattern detected. Boundary enclosure applied."
+        
+        # ========== Build Layer Decisions for Consensus ==========
+        layer_decisions = []
+        
+        # Layer 0: Structural Detector
+        if structural_result.detections:
+            layer_decisions.append(
+                LayerDecision(
+                    source=DecisionSource.STRUCTURAL,
+                    decision=self._map_structural_decision(structural_result.decision),
+                    confidence=structural_result.total_confidence,
+                    detections=structural_result.detections,
+                    metadata={"latency_ms": structural_latency},
+                    latency_ms=structural_latency,
+                )
+            )
+        
+        # Layer 1: Heuristics
+        if heur_triggered:
+            layer_decisions.append(
+                LayerDecision(
+                    source=DecisionSource.STRUCTURAL,  # Also deterministic
+                    decision=self._map_heuristic_decision(heur_score),
+                    confidence=heur_score / 100.0,
+                    detections=[{"technique": heur_tech, "score": heur_score}],
+                    metadata={"explanation": heur_expl},
+                    latency_ms=0.5,
+                )
+            )
+        
+        # Layer 1.5: ML Classifier
+        if ml_triggered:
+            layer_decisions.append(
+                LayerDecision(
+                    source=DecisionSource.ML_CLASSIFIER,
+                    decision=self._map_ml_decision(ml_conf),
+                    confidence=ml_conf,
+                    detections=[{"category": ml_tech, "confidence": ml_conf}],
+                    metadata={"explanation": ml_expl},
+                    latency_ms=1.0,
+                )
+            )
+        
+        # Layer 2: Vector Similarity
+        if sim_score > 0.0:
+            layer_decisions.append(
+                LayerDecision(
+                    source=DecisionSource.VECTOR,
+                    decision=self._map_vector_decision(sim_score, self.settings.gateway_block_threshold, self.settings.gateway_sanitize_threshold, sim_benign, margin),
+                    confidence=sim_score,
+                    detections=[{"technique": vec_tech, "similarity": sim_score, "margin": margin, "benign_similarity": sim_benign}],
+                    metadata={"margin": margin, "benign_similarity": sim_benign},
+                    latency_ms=20.0,
+                )
+            )
+        
+        # ========== Layer 3: Consensus Decision ==========
+        consensus_result: ConsensusResult = await self.consensus_engine.decide(layer_decisions)
+        
+        # Map consensus decision to action
+        action_map = {
+            Decision.ALLOW: EnforceActionEnum.allow,
+            Decision.FLAG: EnforceActionEnum.allow,  # FLAG -> allow but logged
+            Decision.CHALLENGE: EnforceActionEnum.sanitize,
+            Decision.BLOCK: EnforceActionEnum.block,
+        }
+        action = action_map.get(consensus_result.final_decision, EnforceActionEnum.allow)
+        
+        # Determine severity and risk score
+        severity_map = {
+            Decision.ALLOW: SeverityEnum.safe,
+            Decision.FLAG: SeverityEnum.low,
+            Decision.CHALLENGE: SeverityEnum.medium,
+            Decision.BLOCK: SeverityEnum.high,
+        }
+        severity = severity_map.get(consensus_result.final_decision, SeverityEnum.safe)
+        
+        # Calculate risk score from consensus
+        risk_score = self._calculate_risk_score(consensus_result)
+        
+        # Build explanation
+        explanation_parts = []
+        contrastive_allow = False
+        for ld in consensus_result.layer_decisions:
+            if ld.decision != Decision.ALLOW:
+                explanation_parts.append(f"{ld.source.value}: {ld.decision.value} (conf={ld.confidence:.2f})")
+            elif ld.source == DecisionSource.VECTOR and ld.decision == Decision.ALLOW:
+                # Check if this ALLOW was due to contrastive benign suppression
+                margin = ld.metadata.get("margin", 0)
+                sim_benign = ld.metadata.get("benign_similarity", 0)
+                if margin <= -0.05 and sim_benign >= 0.70:
+                    contrastive_allow = True
+        
+        if consensus_result.conflict_details:
+            explanation_parts.append(f"Conflict: {consensus_result.conflict_details}")
+        
+        if contrastive_allow:
+            explanation_parts.insert(0, f"Contrastive Shield: Benign similarity ({sim_benign:.3f}) exceeds attack similarity ({sim_score:.3f}, margin: {margin:+.3f})")
+        
+        explanation = f"Consensus: {consensus_result.final_decision.value}. " + "; ".join(explanation_parts) if explanation_parts else "Consensus: Clean prompt"
+        
+        # Sanitize if needed
+        sanitized_prompt = None
+        if action == EnforceActionEnum.sanitize:
             sanitized_prompt = self._sanitize_prompt(request.prompt, request.system_prompt)
-            risk_score = max(heur_score, int(sim_score * 100), int(ml_conf * 75))
-        else:
-            action = EnforceActionEnum.allow
-            severity = SeverityEnum.safe
-            explanation = f"Clean prompt: Semantic similarity {sim_score:.3f} within safe operating bounds."
-            risk_score = max(0, int(sim_score * 100))
-
+        
+        # Determine matched technique
+        matched_technique = self._extract_matched_technique(layer_decisions)
+        
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-
+        
         decision = EnforceResponse(
             action=action,
             risk_score=risk_score,
             severity=severity,
             matched_technique=matched_technique,
-            vector_similarity=round(sim_score, 4),
+            vector_similarity=round(sim_score, 4) if sim_score > 0 else 0.0,
             sanitized_prompt=sanitized_prompt,
             explanation=explanation,
             latency_ms=latency_ms,
             correlation_id=correlation_id,
             timestamp=datetime.now(timezone.utc),
         )
-
+        
+        # Escalation handling
+        if consensus_result.escalation_required:
+            logger.critical(
+                "ESCALATION REQUIRED: %s | correlation_id=%s",
+                consensus_result.conflict_details,
+                correlation_id
+            )
+        
         # Tier 4: Persist audit log
         self._record_audit_event(decision, request)
-
+        
         return decision
+    
+    def _map_structural_decision(self, decision: StructuralDecision) -> Decision:
+        """Map structural detector decision to consensus decision."""
+        mapping = {
+            StructuralDecision.ALLOW: Decision.ALLOW,
+            StructuralDecision.FLAG: Decision.FLAG,
+            StructuralDecision.CHALLENGE: Decision.CHALLENGE,
+            StructuralDecision.BLOCK: Decision.BLOCK,
+        }
+        return mapping.get(decision, Decision.ALLOW)
+    
+    def _map_heuristic_decision(self, score: int) -> Decision:
+        """Map heuristic score to consensus decision."""
+        if score >= 90:
+            return Decision.BLOCK
+        elif score >= 70:
+            return Decision.CHALLENGE
+        elif score >= 40:
+            return Decision.FLAG
+        return Decision.ALLOW
+    
+    def _map_ml_decision(self, confidence: float) -> Decision:
+        """Map ML confidence to consensus decision."""
+        if confidence >= 0.9:
+            return Decision.BLOCK
+        elif confidence >= 0.8:
+            return Decision.CHALLENGE
+        elif confidence >= 0.6:
+            return Decision.FLAG
+        return Decision.ALLOW
+    
+    def _map_vector_decision(self, similarity: float, block_thresh: float, sanitize_thresh: float, 
+                              sim_benign: float = 0.0, margin: float = 0.0) -> Decision:
+        """Map vector similarity to consensus decision with contrastive benign suppression."""
+        # Contrastive benign suppression: if prompt is more similar to benign usage than attacks, allow
+        if margin <= -0.05 and sim_benign >= 0.70:
+            return Decision.ALLOW
+        if similarity >= block_thresh:
+            return Decision.BLOCK
+        elif similarity >= sanitize_thresh:
+            return Decision.CHALLENGE
+        elif similarity >= 0.5:
+            return Decision.FLAG
+        return Decision.ALLOW
+    
+    def _calculate_risk_score(self, consensus: ConsensusResult) -> int:
+        """Calculate composite risk score from consensus."""
+        if not consensus.layer_decisions:
+            return 0
+        
+        # Weighted average of confidence * decision severity
+        total_weight = 0.0
+        weighted_score = 0.0
+        
+        decision_weights = {
+            Decision.ALLOW: 0,
+            Decision.FLAG: 25,
+            Decision.CHALLENGE: 60,
+            Decision.BLOCK: 95,
+        }
+        
+        for ld in consensus.layer_decisions:
+            weight = self.consensus_engine.protocol.weights.get(ld.source, 0.1)
+            decision_score = decision_weights.get(ld.decision, 0)
+            weighted_score += decision_score * weight * ld.confidence
+            total_weight += weight
+        
+        if total_weight == 0:
+            return 0
+        
+        base_score = weighted_score / total_weight
+        
+        # Boost for conflicts
+        if not consensus.consensus_reached:
+            base_score = min(100, base_score + 15)
+        
+        if consensus.escalation_required:
+            base_score = min(100, base_score + 20)
+        
+        return int(base_score)
+    
+    def _extract_matched_technique(self, layer_decisions: List[LayerDecision]) -> str:
+        """Extract primary matched technique from layer decisions."""
+        for ld in layer_decisions:
+            if ld.decision != Decision.ALLOW and ld.detections:
+                det = ld.detections[0]
+                if isinstance(det, dict) and "technique" in det:
+                    return det["technique"]
+                elif hasattr(det, "attack_type"):
+                    return det.attack_type.value
+            elif ld.source == DecisionSource.VECTOR and ld.decision == Decision.ALLOW:
+                # Check if this ALLOW was due to contrastive benign suppression
+                margin = ld.metadata.get("margin", 0)
+                sim_benign = ld.metadata.get("benign_similarity", 0)
+                if margin <= -0.05 and sim_benign >= 0.70:
+                    return "benign_developer_query"
+        return "consensus_policy"
 
     async def proxy_chat(
         self,

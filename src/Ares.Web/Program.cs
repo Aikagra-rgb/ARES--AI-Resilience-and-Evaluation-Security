@@ -1,26 +1,73 @@
 using Ares.Web;
 using Ares.Web.Services;
 using Microsoft.AspNetCore.DataProtection;
+using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-// This unauthenticated prototype has no durable protected state. Avoid persisting
-// development keys to a user profile; production authentication will replace this.
-builder.Services.AddSingleton<IDataProtectionProvider, EphemeralDataProtectionProvider>();
+// Data Protection - use persistent keys in production, ephemeral only in development
+var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"] 
+    ?? Path.Combine(builder.Environment.ContentRootPath, "keys");
 
+if (builder.Environment.IsDevelopment())
+{
+    // Development: ephemeral is fine
+    builder.Services.AddSingleton<IDataProtectionProvider, EphemeralDataProtectionProvider>();
+}
+else
+{
+    // Production: persist keys to filesystem
+    Directory.CreateDirectory(dataProtectionKeysPath);
+    builder.Services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath))
+        .SetApplicationName("ARES-Security-System");
+}
+
+// Configure CORS for Blazor WebAssembly frontend
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(builder =>
+    {
+        builder.WithOrigins(
+                "http://localhost:5000",
+                "https://localhost:5001",
+                "http://localhost:5149", 
+                "https://localhost:7149",
+                "http://localhost:5180",
+                "https://localhost:7180"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
+    });
+})
+
+// Register Ares API clients
+builder.Services.AddHttpClient<BlazorAresApiClient>(client =>
+{
+    var baseUrl = builder.Configuration["Ares:ApiBaseUrl"] ?? "http://localhost:8000";
+    client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(120);
+});
+builder.Services.AddScoped<IAresApiClient, BlazorAresApiClient>();;
+
+// Add services for both Interactive Server and Interactive WebAssembly
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents(options =>
     {
         options.DetailedErrors = builder.Environment.IsDevelopment();
     })
+    .AddInteractiveWebAssemblyComponents()
     .AddHubOptions(options =>
     {
         // Limit SignalR payload message size to 128KB to prevent buffer exhaustion DoS
         options.MaximumReceiveMessageSize = 128 * 1024;
     });
+
+builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("AresServer"));
 
 builder.Services.AddSingleton<MockQdrantCorpusService>();
 builder.Services.AddScoped<MockAresApiClient>();
@@ -76,8 +123,11 @@ app.Use(async (context, next) =>
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
+app.UseRouting();
+app.UseCors();
 app.UseAntiforgery();
 app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode();
+    .AddInteractiveServerRenderMode()
+    .AddInteractiveWebAssemblyRenderMode();
 
 app.Run();

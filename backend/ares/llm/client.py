@@ -55,19 +55,19 @@ class LLMClient:
         if provider == LLMProvider.GROQ:
             return (
                 self.settings.groq_base_url.rstrip("/"),
-                self.settings.groq_api_key,
+                self.settings.groq_api_key.get_secret_value() if self.settings.groq_api_key else "",
                 self.settings.groq_default_model,
             )
         elif provider == LLMProvider.GEMINI:
             return (
                 self.settings.gemini_base_url.rstrip("/"),
-                self.settings.gemini_api_key,
+                self.settings.gemini_api_key.get_secret_value() if self.settings.gemini_api_key else "",
                 self.settings.gemini_default_model,
             )
         elif provider == LLMProvider.NVIDIA:
             return (
                 self.settings.nvidia_base_url.rstrip("/"),
-                self.settings.nvidia_api_key,
+                self.settings.nvidia_api_key.get_secret_value() if self.settings.nvidia_api_key else "",
                 self.settings.nvidia_default_model,
             )
         elif provider == LLMProvider.OLLAMA:
@@ -79,7 +79,7 @@ class LLMClient:
         elif provider == LLMProvider.OPENAI:
             return (
                 self.settings.openai_base_url.rstrip("/"),
-                self.settings.openai_api_key,
+                self.settings.openai_api_key.get_secret_value() if self.settings.openai_api_key else "",
                 self.settings.openai_default_model,
             )
         else:

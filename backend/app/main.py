@@ -1,14 +1,43 @@
 import hashlib
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from collections import defaultdict
+from typing import Dict, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+# Request size limit middleware
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Middleware to limit request body size."""
+    
+    def __init__(self, app, max_size: int = 10_000_000):  # 10MB default
+        super().__init__(app)
+        self.max_size = max_size
+    
+    async def dispatch(self, request: StarletteRequest, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.max_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "code": "payload_too_large",
+                            "message": f"Request body exceeds maximum size of {self.max_size} bytes",
+                        },
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
 
 from app.config import get_settings
 from app.database import Base, engine, get_db
@@ -40,6 +69,104 @@ from ares.api.routes import (
     stats as ares_stats,
     tests as ares_tests,
 )
+from ares.observability.metrics import (
+    get_metrics,
+    get_metrics_output,
+    MetricsMiddleware,
+)
+
+# Rate limiting storage (in-memory, use Redis in production)
+_rate_limit_storage: Dict[str, list] = defaultdict(list)
+_rate_limit_lock = None  # Placeholder for asyncio.Lock if needed
+
+
+def _get_client_identifier(request: Request) -> str:
+    """Extract client identifier for rate limiting."""
+    # Check for API key first (from verified auth)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return f"apikey:{auth_header[7:20]}"  # First 13 chars of key
+    
+    # Fall back to IP address
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "unknown"
+    return f"ip:{client_ip}"
+
+
+def _check_rate_limit(
+    identifier: str,
+    max_requests: int,
+    window_seconds: int,
+) -> Tuple[bool, int, int]:
+    """
+    Check if request is within rate limit.
+    Returns: (allowed, remaining_requests, retry_after_seconds)
+    """
+    now = time.time()
+    window_start = now - window_seconds
+    
+    # Clean old entries
+    requests = _rate_limit_storage[identifier]
+    while requests and requests[0] < window_start:
+        requests.pop(0)
+    
+    remaining = max_requests - len(requests)
+    if remaining <= 0:
+        # Calculate retry-after based on oldest request
+        retry_after = int(requests[0] + window_seconds - now) + 1
+        return False, 0, max(retry_after, 1)
+    
+    requests.append(now)
+    return True, remaining, 0
+
+
+async def rate_limit_middleware(request: Request, call_next):
+    """Rate limiting middleware with per-endpoint limits."""
+    # Skip rate limiting for health checks
+    if request.url.path in ("/healthz", "/health"):
+        return await call_next(request)
+    
+    # Determine rate limit based on endpoint
+    path = request.url.path
+    identifier = _get_client_identifier(request)
+    
+    # Stricter limits for expensive operations
+    if path.startswith("/api/v1/harden") or path.startswith("/api/gateway"):
+        max_requests, window = 30, 60  # 30 requests per minute
+    elif path.startswith("/api/v1/stats/retrain"):
+        max_requests, window = 5, 300  # 5 requests per 5 minutes
+    elif path.startswith("/api/v1/search"):
+        max_requests, window = 60, 60  # 60 requests per minute
+    else:
+        max_requests, window = 120, 60  # 120 requests per minute default
+    
+    allowed, remaining, retry_after = _check_rate_limit(
+        f"{identifier}:{path}", max_requests, window
+    )
+    
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "code": "rate_limited",
+                "message": f"Rate limit exceeded. Try again in {retry_after} seconds.",
+                "retry_after": retry_after,
+            },
+            headers={
+                "X-RateLimit-Limit": str(max_requests),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(time.time()) + retry_after),
+                "Retry-After": str(retry_after),
+            },
+        )
+    
+    response = await call_next(request)
+    response.headers["X-RateLimit-Limit"] = str(max_requests)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
 
 settings = get_settings()
 orchestrator = TestOrchestrator(settings)
@@ -85,6 +212,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request size limit middleware (10MB)
+app.add_middleware(RequestSizeLimitMiddleware, max_size=10_000_000)
+
+# Rate limiting middleware (added before auth so it applies to all requests)
+app.middleware("http")(rate_limit_middleware)
+
 # Unified ARES Vector Security, ML Analytics, Hardening, and Gateway Routers.
 # Every one of these routes is protected by API-key authentication; only the health
 # probes below are public.
@@ -115,11 +248,66 @@ async def v1_harden(req: ares_harden.HardenRequest):
     return await ares_harden.harden_prompt(req)
 
 
+@app.get("/metrics", tags=["observability"])
+async def metrics_endpoint():
+    """Prometheus metrics endpoint."""
+    return Response(content=get_metrics_output(), media_type="text/plain")
+
+
 @app.get("/healthz", tags=["health"])
 @app.get("/health", tags=["health"])
 async def healthz() -> dict:
-    """Unified service health probe."""
-    return {"status": "ok", "service": "ARES Unified API"}
+    """Unified service health probe with dependency checks."""
+    from app.database import engine
+    from sqlalchemy import text
+    
+    checks = {}
+    overall_status = "ok"
+    
+    # Check database
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["database"] = {"status": "ok", "detail": "Connection successful"}
+    except Exception as e:
+        checks["database"] = {"status": "error", "detail": str(e)}
+        overall_status = "degraded"
+    
+    # Check Qdrant (if configured)
+    try:
+        if settings.qdrant_url:
+            from ares.vectordb.store import QdrantStore
+            store = QdrantStore(settings=settings)
+            collections = store.client.get_collections()
+            checks["qdrant"] = {"status": "ok", "detail": f"{len(collections.collections)} collections"}
+        else:
+            checks["qdrant"] = {"status": "not_configured", "detail": "QDRANT_URL not set"}
+    except Exception as e:
+        checks["qdrant"] = {"status": "error", "detail": str(e)}
+        overall_status = "degraded"
+    
+    # Check LLM providers (basic config check)
+    llm_status = []
+    if settings.groq_api_key:
+        llm_status.append("groq")
+    if settings.gemini_api_key:
+        llm_status.append("gemini")
+    if settings.openai_api_key:
+        llm_status.append("openai")
+    if settings.nvidia_api_key:
+        llm_status.append("nvidia")
+    
+    checks["llm_providers"] = {
+        "status": "ok" if llm_status else "not_configured",
+        "configured": llm_status,
+    }
+    
+    return {
+        "status": overall_status,
+        "service": "ARES Unified API",
+        "version": "0.1.0",
+        "checks": checks,
+    }
 
 
 @app.middleware("http")

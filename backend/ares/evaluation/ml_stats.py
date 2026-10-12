@@ -33,9 +33,18 @@ from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH: Path = (
-    Path(__file__).parent.parent.parent / "data" / "models" / "classifier.joblib"
-)
+# Model version - increment when model architecture changes
+MODEL_VERSION = "1.0.0"
+
+# Versioned model path
+def get_model_path(version: str = MODEL_VERSION) -> Path:
+    """Get versioned model path."""
+    base_dir = Path(__file__).parent.parent.parent / "data" / "models"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / f"classifier_v{version}.joblib"
+
+# Legacy path for backward compatibility
+DEFAULT_MODEL_PATH: Path = get_model_path()
 
 
 @dataclass
@@ -166,6 +175,11 @@ class AttackClassifierBundle:
     tfidf_char: TfidfVectorizer
     scaler: MinMaxScaler
     classes: List[str]
+    # Version metadata
+    model_version: str = MODEL_VERSION
+    trained_at: Optional[str] = None
+    training_data_hash: Optional[str] = None
+    cv_accuracy: Optional[float] = None
 
     def predict_proba(self, text: str) -> Dict[str, float]:
         """Compute class probabilities for a single prompt string."""
@@ -186,21 +200,29 @@ class AttackClassifierBundle:
     def save(self, path: Optional[Union[str, Path]] = None) -> Path:
         """Persist classifier bundle using joblib."""
         import joblib
-        out_path = Path(path) if path else DEFAULT_MODEL_PATH
+        import datetime
+        out_path = Path(path) if path else get_model_path()
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Update metadata before saving
+        self.trained_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.model_version = MODEL_VERSION
+        
         joblib.dump(self, out_path)
-        logger.info("Saved trained AttackClassifierBundle to %s", out_path)
+        logger.info("Saved trained AttackClassifierBundle v%s to %s", MODEL_VERSION, out_path)
         return out_path
 
     @classmethod
     def load(cls, path: Optional[Union[str, Path]] = None) -> Optional["AttackClassifierBundle"]:
         """Load trained AttackClassifierBundle from disk if available."""
         import joblib
-        target_path = Path(path) if path else DEFAULT_MODEL_PATH
+        target_path = Path(path) if path else get_model_path()
         if target_path.exists():
             try:
                 bundle = joblib.load(target_path)
                 if isinstance(bundle, cls):
+                    logger.info("Loaded AttackClassifierBundle v%s from %s", 
+                               getattr(bundle, 'model_version', 'unknown'), target_path)
                     return bundle
             except Exception as exc:
                 logger.warning("Failed to load AttackClassifierBundle from %s: %s", target_path, exc)
@@ -225,7 +247,7 @@ class AttackVectorMLAnalyzer:
         self.settings = settings or default_settings
         self.store = store or QdrantStore(settings=self.settings)
 
-    def fetch_data(self, max_points: Optional[int] = None) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    def fetch_data(self, max_points: Optional[int] = None) -> Tuple[np.ndarray, List[Dict[str, Any]], str]:
         """Retrieve all vector points and metadata payloads from Qdrant with pagination."""
         all_points = []
         offset = None
@@ -256,11 +278,19 @@ class AttackVectorMLAnalyzer:
 
         vectors = np.array([p.vector for p in all_points], dtype=np.float32)
         payloads = [p.payload or {} for p in all_points]
-        return vectors, payloads
+        
+        # Compute training data hash for versioning
+        import hashlib
+        data_hash = hashlib.sha256()
+        for p in sorted(payloads, key=lambda x: x.get("attack_text", "")):
+            data_hash.update(p.get("attack_text", "").encode("utf-8"))
+        training_data_hash = data_hash.hexdigest()[:16]
+        
+        return vectors, payloads, training_data_hash
 
     def compute_analysis(self, max_points: Optional[int] = None) -> MLAnalysisReport:
         """Run full ML statistical pipeline and train classifier across the full corpus."""
-        vectors, payloads = self.fetch_data(max_points=max_points)
+        vectors, payloads, training_data_hash = self.fetch_data(max_points=max_points)
         n_samples, n_dim = vectors.shape
 
         # --- 1. Vector Space & Pairwise Cosine Statistics ---
@@ -394,12 +424,15 @@ class AttackVectorMLAnalyzer:
         cm          = confusion_matrix(y, y_pred, labels=unique_categories).tolist()
 
         # Build and persist the runtime classifier bundle for sub-1ms Gateway Tier 1 inspection (Issue 9)
+        cv_accuracy = float(np.mean(cv_scores))
         bundle = AttackClassifierBundle(
             clf=clf_nb,
             tfidf_word=tfidf_word,
             tfidf_char=tfidf_char,
             scaler=scaler,
             classes=unique_categories,
+            cv_accuracy=cv_accuracy,
+            training_data_hash=training_data_hash,
         )
         try:
             bundle.save()
