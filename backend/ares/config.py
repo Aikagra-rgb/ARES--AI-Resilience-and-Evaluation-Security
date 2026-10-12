@@ -48,7 +48,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Database
     # -------------------------------------------------------------------------
-    database_url: str = Field(default="sqlite:///./ares.db", alias="DATABASE_URL")
+    # PostgreSQL only - no SQLite fallback. Must be set via DATABASE_URL env var.
+    # Format: postgresql+psycopg://user:pass@host:port/dbname
+    database_url: str = Field(..., alias="DATABASE_URL")
     auto_create_schema: bool = Field(default=True, alias="AUTO_CREATE_SCHEMA")
     
     # -------------------------------------------------------------------------
@@ -139,7 +141,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Embedding-space safety
     # -------------------------------------------------------------------------
-    embedding_fallback_to_gemini: bool = Field(default=True, alias="EMBEDDING_FALLBACK_TO_GEMINI")
+    # When True, allows deterministic hash fallback when external embedding APIs fail.
+    # Default: False (fail closed - report degraded instead of generating pseudo-vectors)
+    embedding_allow_hash_fallback: bool = Field(default=False, alias="EMBEDDING_ALLOW_HASH_FALLBACK")
     
     # -------------------------------------------------------------------------
     # CORS
@@ -175,6 +179,24 @@ class Settings(BaseSettings):
     # Validators
     # -------------------------------------------------------------------------
     
+    @model_validator(mode="after")
+    def _validate_database_url(self) -> "Settings":
+        """Fail fast if DATABASE_URL is unset or invalid."""
+        if not self.database_url or not self.database_url.strip():
+            raise ValueError(
+                "DATABASE_URL is required. Set it to a PostgreSQL connection string, "
+                "e.g., postgresql+psycopg://user:pass@host:port/dbname"
+            )
+        
+        # Must be PostgreSQL
+        if not self.database_url.startswith("postgresql"):
+            raise ValueError(
+                f"DATABASE_URL must be a PostgreSQL connection string (postgresql+psycopg://...), "
+                f"got: {self.database_url}"
+            )
+        
+        return self
+
     @model_validator(mode="after")
     def _enforce_production_security(self) -> "Settings":
         """Fail closed: outside development, auth must be on and the dev key is forbidden."""

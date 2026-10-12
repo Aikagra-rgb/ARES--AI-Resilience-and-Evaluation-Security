@@ -19,6 +19,21 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ares_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,10 +52,16 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
+      - name: Compilation & Syntax Gate
+        working-directory: backend
+        run: |
+          python -m compileall -q ares app
+          ruff check ares app
+
       - name: Run pytest unit test suite
         working-directory: backend
         env:
-          DATABASE_URL: "sqlite:///./test-orchestrator.db"
+          DATABASE_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/ares_test"
           GROQ_API_KEY: "mock-groq-key"
           GEMINI_API_KEY: "mock-gemini-key"
           NVIDIA_API_KEY: "mock-nvidia-key"

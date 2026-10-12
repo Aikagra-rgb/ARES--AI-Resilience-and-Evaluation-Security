@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
     <link rel="stylesheet" href="app.css" />
-    <link rel="icon" type="image/svg+json" href="icon.svg" />
+    <link rel="icon" type="image/svg+xml" href="icon.svg" />
     <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 <body>
@@ -17,13 +17,5 @@
     <script src="ares-temple.js"></script>
     <script src="ares-control-surface.js"></script>
     <script src="_framework/blazor.web.js"></script>
-    <script>
-        // Initialize Ares API client configuration for Blazor WebAssembly
-        window.ARES_CONFIG = {
-            apiBaseUrl: "http://localhost:8000",
-            apiKey: "ares-dev-secret-key-42",
-            useMock: false
-        };
-    </script>
 </body>
 </html>

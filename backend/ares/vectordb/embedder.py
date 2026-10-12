@@ -161,8 +161,10 @@ class GeminiEmbedder:
 
         endpoint = (
             f"https://generativelanguage.googleapis.com/v1beta/{self.model}:embedContent"
-            f"?key={self.settings.gemini_api_key}"
         )
+        headers = {
+            "x-goog-api-key": self.settings.gemini_api_key.get_secret_value(),
+        }
         payload = {
             "model": self.model,
             "content": {"parts": [{"text": text}]},
@@ -176,7 +178,7 @@ class GeminiEmbedder:
 
         while retries <= max_embed_retries:
             try:
-                response = await client.post(endpoint, json=payload)
+                response = await client.post(endpoint, json=payload, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
                     values = data.get("embedding", {}).get("values", [])
@@ -221,12 +223,12 @@ class GeminiEmbedder:
                 "Embedding service unavailable. This will degrade gateway effectiveness. "
                 "Configure OLLAMA_BASE_URL for local embeddings or check GEMINI_API_KEY quota."
             )
-            if self.settings.embedding_fallback_to_gemini:
+            if self.settings.embedding_allow_hash_fallback:
                 logger.warning("Falling back to deterministic projection (NOT semantically meaningful).")
                 return self._fallback_project_embeddings([text])[0]
             raise EmbeddingError(
                 "Gemini embedding API rate limited and fallback disabled. "
-                "Set EMBEDDING_FALLBACK_TO_GEMINI=true to enable degraded mode, "
+                "Set EMBEDDING_ALLOW_HASH_FALLBACK=true to enable degraded mode, "
                 "or configure Ollama for local embeddings."
             )
 
@@ -282,8 +284,10 @@ class GeminiEmbedder:
 
         endpoint = (
             f"https://generativelanguage.googleapis.com/v1beta/{self.model}:batchEmbedContents"
-            f"?key={self.settings.gemini_api_key}"
         )
+        headers = {
+            "x-goog-api-key": self.settings.gemini_api_key.get_secret_value(),
+        }
         client = await self._get_client()
         all_embeddings: List[List[float]] = []
 
@@ -304,7 +308,7 @@ class GeminiEmbedder:
             payload = {"requests": requests_payload}
 
             try:
-                response = await client.post(endpoint, json=payload)
+                response = await client.post(endpoint, json=payload, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
                     embeddings = [

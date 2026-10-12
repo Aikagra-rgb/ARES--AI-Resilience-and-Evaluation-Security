@@ -346,7 +346,8 @@ async def get_provider_health() -> List[ProviderHealthResponse]:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={settings.gemini_api_key}"
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": settings.gemini_api_key.get_secret_value()},
                 )
             gemini_status = ProviderStatusEnum.operational if r.status_code == 200 else ProviderStatusEnum.degraded
             gemini_detail = "Reachable" if r.status_code == 200 else f"HTTP {r.status_code}"

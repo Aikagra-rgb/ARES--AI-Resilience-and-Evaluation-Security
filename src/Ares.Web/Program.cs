@@ -43,31 +43,28 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod()
             .AllowCredentials();
     });
-})
+});
 
 // Register Ares API clients
-builder.Services.AddHttpClient<BlazorAresApiClient>(client =>
+builder.Services.AddHttpClient<FastApiAresApiClient>(client =>
 {
     var baseUrl = builder.Configuration["Ares:ApiBaseUrl"] ?? "http://localhost:8000";
     client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(120);
 });
-builder.Services.AddScoped<IAresApiClient, BlazorAresApiClient>();;
+builder.Services.AddScoped<IAresApiClient, FastApiAresApiClient>();
 
-// Add services for both Interactive Server and Interactive WebAssembly
+// Add services for Interactive Server only
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents(options =>
     {
         options.DetailedErrors = builder.Environment.IsDevelopment();
     })
-    .AddInteractiveWebAssemblyComponents()
     .AddHubOptions(options =>
     {
         // Limit SignalR payload message size to 128KB to prevent buffer exhaustion DoS
         options.MaximumReceiveMessageSize = 128 * 1024;
     });
-
-builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("AresServer"));
 
 builder.Services.AddSingleton<MockQdrantCorpusService>();
 builder.Services.AddScoped<MockAresApiClient>();
@@ -83,15 +80,6 @@ if (useMock)
 }
 else
 {
-    builder.Services.AddHttpClient<FastApiAresApiClient>(client =>
-    {
-        client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
-        client.Timeout = TimeSpan.FromSeconds(120);
-        client.DefaultRequestHeaders.Add("X-Ares-User-Email", builder.Configuration["Ares:DevelopmentUserEmail"] ?? "developer@local");
-        client.DefaultRequestHeaders.Add("X-Ares-Api-Key", apiKey);
-    });
-    builder.Services.AddScoped<IAresApiClient>(provider => provider.GetRequiredService<FastApiAresApiClient>());
-
     builder.Services.AddHttpClient<RealQdrantCorpusService>(client =>
     {
         client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
@@ -127,7 +115,6 @@ app.UseRouting();
 app.UseCors();
 app.UseAntiforgery();
 app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode()
-    .AddInteractiveWebAssemblyRenderMode();
+    .AddInteractiveServerRenderMode();
 
 app.Run();
