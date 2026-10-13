@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.database import Base, engine, get_db
 from app.dependencies import CurrentUser, get_current_user
 from app.arena import CHALLENGES, CHALLENGE_BY_ID, PATHS, ROOMS, score_run
-from app.models import ArenaSubmission, Finding, Policy, Project, TestRun, TestRunStatus
+from app.models import ArenaSubmission, AuditLog, Finding, Policy, Project, TestRun, TestRunStatus
 from app.orchestrator import TestOrchestrator
 from app.schemas import (
     CancelTestResponse,
@@ -42,6 +42,8 @@ from ares.api.routes import (
     search as ares_search,
     stats as ares_stats,
     tests as ares_tests,
+    models as ares_models,
+    moderation as ares_moderation,
 )
 from ares.observability.metrics import (
     get_metrics,
@@ -49,6 +51,9 @@ from ares.observability.metrics import (
     MetricsMiddleware,
 )
 from ares.gateway.enforcer import RuntimeEnforcer
+from ares.security.rate_limiter import MemoryRateLimiter, RateLimitMiddleware
+from ares.security.signing import HmacVerifier, HmacVerificationMiddleware
+from ares.observability.logging import set_correlation_id, set_organization_id
 
 settings = get_settings()
 orchestrator = TestOrchestrator(settings)
@@ -87,14 +92,25 @@ def api_error(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.auto_create_schema:
-        Base.metadata.create_all(bind=engine)
+    if settings.auto_create_schema and settings.environment != "test":
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception:
+            pass
     app.state.orchestrator = orchestrator
-    await orchestrator.start()
+    if settings.environment != "test":
+        try:
+            await orchestrator.start()
+        except Exception:
+            pass
     try:
         yield
     finally:
-        await orchestrator.stop()
+        if settings.environment != "test":
+            try:
+                await orchestrator.stop()
+            except Exception:
+                pass
 
 
 app = FastAPI(title="ARES Security API", version="0.1.0", lifespan=lifespan)
@@ -104,6 +120,25 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+rate_limiter = MemoryRateLimiter()
+app.add_middleware(
+    RateLimitMiddleware,
+    limiter=rate_limiter,
+    enabled=getattr(settings, "rate_limit_enabled", True),
+    requests_per_window=getattr(settings, "rate_limit_requests", 120),
+    window_seconds=getattr(settings, "rate_limit_window_seconds", 60),
+)
+
+hmac_verifier = HmacVerifier(
+    default_secret=getattr(settings, "hmac_secret", settings.api_key),
+    max_clock_skew_seconds=getattr(settings, "hmac_max_clock_skew", 300),
+)
+app.add_middleware(
+    HmacVerificationMiddleware,
+    verifier=hmac_verifier,
+    enforce_mode=getattr(settings, "hmac_enforce_mode", "permissive"),
 )
 
 # Unified ARES Vector Security, ML Analytics, Hardening, and Gateway Routers.
@@ -117,6 +152,8 @@ app.include_router(ares_harden.router, dependencies=_auth)
 app.include_router(ares_corpus.router, dependencies=_auth)
 app.include_router(ares_tests.router, dependencies=_auth)
 app.include_router(ares_gateway.router, dependencies=_auth)
+app.include_router(ares_models.router, dependencies=_auth)
+app.include_router(ares_moderation.router, dependencies=_auth)
 
 # Explicit v1 aliases for frontend compatibility
 @app.get("/api/v1/stats", tags=["stats"], dependencies=_auth)
@@ -201,9 +238,18 @@ async def healthz() -> dict:
 
 @app.middleware("http")
 async def attach_correlation_id(request: Request, call_next):
-    request.state.correlation_id = request.headers.get("X-Correlation-ID") or "ares-" + secrets.token_hex(6)
-    response = await call_next(request)
-    response.headers["X-Correlation-ID"] = request.state.correlation_id
+    corr_id = request.headers.get("X-Correlation-ID") or "ares-" + secrets.token_hex(6)
+    org_id = request.headers.get("X-Ares-Organization-Id")
+    request.state.correlation_id = corr_id
+    request.state.organization_id = org_id
+    set_correlation_id(corr_id)
+    set_organization_id(org_id)
+    try:
+        response = await call_next(request)
+    finally:
+        set_correlation_id(None)
+        set_organization_id(None)
+    response.headers["X-Correlation-ID"] = corr_id
     return response
 
 

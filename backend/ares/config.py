@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     api_key: str = Field(default=_DEV_API_KEY, alias="ARES_API_KEY")
     auth_enabled: bool = Field(default=True, alias="ARES_AUTH_ENABLED")
     
+    # HMAC Request Integrity & Signing
+    hmac_enforce_mode: str = Field(default="permissive", alias="HMAC_ENFORCE_MODE")
+    hmac_secret: str = Field(default=_DEV_API_KEY, alias="HMAC_SECRET")
+    hmac_max_clock_skew: int = Field(default=300, alias="HMAC_MAX_CLOCK_SKEW")
+    
+    # HTTP Gateway Rate Limiting
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_requests: int = Field(default=120, alias="RATE_LIMIT_REQUESTS")
+    rate_limit_window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+    
+    # Gateway Resilience & Circuit Breaker
+    gateway_fail_closed_on_outage: bool = Field(default=False, alias="GATEWAY_FAIL_CLOSED_ON_OUTAGE")
+    
     # -------------------------------------------------------------------------
     # LLM Providers
     # -------------------------------------------------------------------------
@@ -98,7 +111,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_default_model: str = Field(default="llama3.1:8b", alias="OLLAMA_DEFAULT_MODEL")
     ollama_embedding_model: str = Field(default="nomic-embed-text", alias="OLLAMA_EMBEDDING_MODEL")
-    prefer_local_embeddings: bool = Field(default=False, alias="PREFER_LOCAL_EMBEDDINGS")
+    prefer_local_embeddings: bool = Field(default=True, alias="PREFER_LOCAL_EMBEDDINGS")
     
     # -------------------------------------------------------------------------
     # Vector DB (Qdrant)
@@ -112,19 +125,19 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Role Assignments
     # -------------------------------------------------------------------------
-    attacker_provider: str = Field(default="groq", alias="ATTACKER_PROVIDER")
-    victim_provider: str = Field(default="groq", alias="VICTIM_PROVIDER")
-    judge_provider: str = Field(default="gemini", alias="JUDGE_PROVIDER")
-    hardener_provider: str = Field(default="nvidia", alias="HARDENER_PROVIDER")
+    attacker_provider: str = Field(default="ollama", alias="ATTACKER_PROVIDER")
+    victim_provider: str = Field(default="ollama", alias="VICTIM_PROVIDER")
+    judge_provider: str = Field(default="ollama", alias="JUDGE_PROVIDER")
+    hardener_provider: str = Field(default="ollama", alias="HARDENER_PROVIDER")
     hardener_model: str = Field(
-        default="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        default="llama3.1:8b",
         alias="HARDENER_MODEL",
     )
     
     # -------------------------------------------------------------------------
     # Resilience & Fallback Settings
     # -------------------------------------------------------------------------
-    fallback_order: List[str] = Field(default_factory=lambda: ["groq", "gemini", "nvidia", "ollama"], alias="FALLBACK_ORDER")
+    fallback_order: List[str] = Field(default_factory=lambda: ["ollama", "groq", "gemini", "nvidia"], alias="FALLBACK_ORDER")
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
     retry_min_wait_seconds: float = Field(default=0.5, alias="RETRY_MIN_WAIT_SECONDS")
     retry_max_wait_seconds: float = Field(default=4.0, alias="RETRY_MAX_WAIT_SECONDS")

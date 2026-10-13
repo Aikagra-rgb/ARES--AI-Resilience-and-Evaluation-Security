@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ from app.models import Evidence, Finding, TestRun, TestRunStatus
 from app.providers import ProviderRegistry
 from app.providers.base import ProviderExecutionError
 from app.security import PayloadCipher
+
+logger = logging.getLogger(__name__)
 
 
 class TestOrchestrator:
@@ -78,8 +81,24 @@ class TestOrchestrator:
                 if test_id is None:
                     return
                 await self._execute(test_id)
+            except Exception:
+                logger.exception("Test worker recovered from an unexpected failure")
+                try:
+                    self._record_worker_failure(test_id)
+                except Exception:
+                    logger.exception("Could not mark run '%s' as failed", test_id)
             finally:
                 self._queue.task_done()
+
+    def _record_worker_failure(self, test_id: str | None) -> None:
+        if test_id is None:
+            return
+        with SessionLocal() as db:
+            run = db.get(TestRun, test_id)
+            if run is None or run.status not in (TestRunStatus.queued, TestRunStatus.running):
+                return
+            self._fail(run, "The test runner encountered an internal error while executing this run.")
+            db.commit()
 
     async def _execute(self, test_id: str) -> None:
         started = time.perf_counter()

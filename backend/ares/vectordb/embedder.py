@@ -9,6 +9,7 @@ Supports single text and batch embedding with exponential backoff retries.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -181,14 +182,21 @@ class GeminiEmbedder:
                 response = await client.post(endpoint, json=payload, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
+                    if inspect.iscoroutine(data):
+                        data = await data
                     values = data.get("embedding", {}).get("values", [])
                     if not values:
                         raise EmbeddingError("No embedding values returned in response.")
                     return values
 
                 elif response.status_code == 429:
-                    err_text = response.text
+                    err_text = response.text if isinstance(response.text, str) else str(response.text)
                     if "RESOURCE_EXHAUSTED" in err_text or "Quota exceeded" in err_text:
+                        if not getattr(self.settings, "embedding_allow_hash_fallback", False):
+                            raise EmbeddingError(
+                                "Gemini daily embedding quota reached (429) and hash fallback is disabled.",
+                                status_code=429,
+                            )
                         logger.warning("Gemini daily embedding quota reached (429). Activating local deterministic semantic vector projection.")
                         self._gemini_rate_limited = True
                         return self._fallback_project_embeddings([text])[0]
@@ -311,6 +319,8 @@ class GeminiEmbedder:
                 response = await client.post(endpoint, json=payload, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
+                    if inspect.iscoroutine(data):
+                        data = await data
                     embeddings = [
                         emb.get("values", []) for emb in data.get("embeddings", [])
                     ]

@@ -17,6 +17,7 @@ Outcome is max_severity across all layers.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -35,8 +36,19 @@ from ares.api.schemas import (
     AttackCategoryEnum,
 )
 from ares.config import Settings, settings as default_settings
+from ares.gateway.context import TenantContext
 from ares.llm.client import LLMClient
 from ares.mappings import to_frontend_category
+from ares.observability.tracing import (
+    async_trace_span,
+    ATTR_ARES_DECISION,
+    ATTR_ARES_SEVERITY,
+    ATTR_ARES_RISK_SCORE,
+    ATTR_ARES_CORRELATION_ID,
+    ATTR_ARES_TENANT_ID,
+    ATTR_ARES_TECHNIQUE,
+)
+from ares.security.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 from ares.security.structural_detector import (
     StructuralAttackDetector,
     DetectionResult,
@@ -123,13 +135,15 @@ class RuntimeEnforcer:
 
         self._benign_vectors: Optional[np.ndarray] = None
 
-    def _inspect_heuristics(self, text: str) -> Tuple[bool, Optional[str], int, str]:
+    def _inspect_heuristics(
+        self, text: str, canary_token: Optional[str] = None
+    ) -> Tuple[bool, Optional[str], int, str]:
         """
         Fast layer-1 regex check.
         Returns: (triggered, technique, risk_score, explanation)
         """
         # 1. Check for canary token extraction/misuse
-        canary = self.settings.gateway_canary_token
+        canary = canary_token or self.settings.gateway_canary_token
         if canary and canary in text:
             return (
                 True,
@@ -152,16 +166,20 @@ class RuntimeEnforcer:
         return (False, None, 0, "No heuristic anomalies detected.")
 
     async def _inspect_vector_similarity(
-        self, text: str
+        self, text: str, collection_name: Optional[str] = None
     ) -> Tuple[float, Optional[str], Optional[Dict[str, Any]]]:
         """
         Layer-2 semantic search against 3,695 vectors in Qdrant Cloud.
+        Protected by CircuitBreaker to prevent gateway lockup during vector DB degradation.
         Returns: (top_similarity_score, matched_technique, top_hit_payload)
         """
+        breaker = get_circuit_breaker("qdrant_vector_store")
         try:
-            hits = await self.store.search_similar_attacks(
+            hits = await breaker.execute(
+                self.store.search_similar_attacks,
                 query_text=text,
                 limit=1,
+                collection_name=collection_name,
             )
             if hits:
                 top = hits[0]
@@ -169,8 +187,16 @@ class RuntimeEnforcer:
                 payload = top.get("payload", {})
                 technique = payload.get("technique") or payload.get("category") or "adversarial_vector"
                 return (score, technique, payload)
+        except CircuitBreakerOpenError as exc:
+            logger.error("Vector store circuit breaker is OPEN: %s", exc)
+            if getattr(self.settings, "gateway_fail_closed_on_outage", False):
+                return (1.0, "vector_shield_circuit_open", {"quarantine": True, "error": str(exc)})
+            return (0.0, "vector_shield_circuit_open", {"degraded": True, "error": str(exc)})
         except Exception as exc:
-            logger.warning("Gateway vector similarity search failed: %s", exc)
+            logger.error("Gateway vector similarity search failed: %s", exc)
+            if getattr(self.settings, "gateway_fail_closed_on_outage", False):
+                return (1.0, "vector_shield_unavailable", {"quarantine": True, "error": str(exc)})
+            return (0.0, "vector_shield_unavailable", {"degraded": True, "error": str(exc)})
 
         return (0.0, None, None)
 
@@ -264,13 +290,38 @@ class RuntimeEnforcer:
         self,
         decision: EnforceResponse,
         request: EnforceRequest,
+        organization_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> None:
         """
-        Persist enforcement event to DB so dashboard telemetry updates live.
-        Ensures foreign-key relationships (organization, user, project) exist
-        in PostgreSQL before inserting TestRun and Finding records.
+        Non-blocking dispatch of audit event persistence.
+        Offloads synchronous database I/O to a worker thread so the
+        asyncio event loop thread is never stalled by DB transactions.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                asyncio.to_thread(
+                    self._persist_audit_event_sync,
+                    decision,
+                    request,
+                    organization_id,
+                    project_id,
+                )
+            )
+        except RuntimeError:
+            self._persist_audit_event_sync(decision, request, organization_id, project_id)
 
-        Gracefully handles missing/unavailable database (e.g., in tests).
+    def _persist_audit_event_sync(
+        self,
+        decision: EnforceResponse,
+        request: EnforceRequest,
+        organization_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> None:
+        """
+        Synchronous database transaction for persisting audit logs.
+        Called on a worker thread via asyncio.to_thread.
         """
         try:
             from sqlalchemy import select
@@ -281,16 +332,23 @@ class RuntimeEnforcer:
             # App models not available (e.g., in isolated tests)
             return
 
+        if getattr(self.settings, "environment", "development") == "test":
+            return
+
         db = None
         try:
             db = SessionLocal()
             try:
-                # 1. Lookup or create system organization
-                org = db.scalar(select(Organization).where(Organization.name == "System Gateway Organization"))
+                # 1. Lookup or create tenant/system organization
+                org = None
+                if organization_id and organization_id != "default":
+                    org = db.scalar(select(Organization).where((Organization.id == organization_id) | (Organization.name == organization_id)))
                 if org is None:
-                    org = Organization(name="System Gateway Organization")
-                    db.add(org)
-                    db.flush()
+                    org = db.scalar(select(Organization).where(Organization.name == "System Gateway Organization"))
+                    if org is None:
+                        org = Organization(name="System Gateway Organization")
+                        db.add(org)
+                        db.flush()
 
                 # 2. Lookup or create system user
                 user = db.scalar(select(User).where(User.organization_id == org.id, User.email == "gateway@ares.system"))
@@ -304,16 +362,20 @@ class RuntimeEnforcer:
                     db.flush()
 
                 # 3. Lookup or create system project
-                project = db.scalar(select(Project).where(Project.organization_id == org.id, Project.name == "Runtime Gateway"))
+                project = None
+                if project_id:
+                    project = db.scalar(select(Project).where((Project.id == project_id) & (Project.organization_id == org.id)))
                 if project is None:
-                    project = Project(
-                        organization_id=org.id,
-                        created_by_user_id=user.id,
-                        name="Runtime Gateway",
-                        description="Automated runtime gateway enforcement audit logs",
-                    )
-                    db.add(project)
-                    db.flush()
+                    project = db.scalar(select(Project).where(Project.organization_id == org.id, Project.name == "Runtime Gateway"))
+                    if project is None:
+                        project = Project(
+                            organization_id=org.id,
+                            created_by_user_id=user.id,
+                            name="Runtime Gateway",
+                            description="Automated runtime gateway enforcement audit logs",
+                        )
+                        db.add(project)
+                        db.flush()
 
                 run_id = f"gw-run-{decision.correlation_id[:8]}"
                 finding_id = f"gw-fnd-{decision.correlation_id[:8]}"
@@ -397,7 +459,11 @@ class RuntimeEnforcer:
             return SeverityEnum.safe
         return max(severities, key=lambda s: severity_order.get(s, 0))
 
-    async def enforce(self, request: EnforceRequest) -> EnforceResponse:
+    async def enforce(
+        self,
+        request: EnforceRequest,
+        context: Optional[TenantContext] = None,
+    ) -> EnforceResponse:
         """
         Execute full multi-tier inspection pipeline with strict severity-max decision making.
 
@@ -409,12 +475,56 @@ class RuntimeEnforcer:
         - Layer 2.5: Contrastive Benign Margin Scoring
         - Layer 3: Strict Severity-Max Policy Decision
         """
-        t0 = time.perf_counter()
         correlation_id = request.correlation_id or uuid.uuid4().hex[:12]
+        effective_org_id = context.organization_id if context else self.organization_id
+
+        async with async_trace_span(
+            "ares.gateway.enforce",
+            {
+                ATTR_ARES_CORRELATION_ID: correlation_id,
+                ATTR_ARES_TENANT_ID: effective_org_id,
+            },
+        ) as span:
+            decision = await self._enforce_pipeline(request, context, correlation_id)
+            span.set_attribute(ATTR_ARES_DECISION, decision.action.value)
+            span.set_attribute(ATTR_ARES_SEVERITY, decision.severity.value)
+            span.set_attribute(ATTR_ARES_RISK_SCORE, decision.risk_score)
+            span.set_attribute(ATTR_ARES_TECHNIQUE, decision.matched_technique)
+            return decision
+
+    async def _enforce_pipeline(
+        self,
+        request: EnforceRequest,
+        context: Optional[TenantContext],
+        correlation_id: str,
+    ) -> EnforceResponse:
+        t0 = time.perf_counter()
+
+        # Multi-tenant parameter resolution
+        effective_canary = (
+            context.canary_token
+            if (context and context.canary_token)
+            else (self.settings.gateway_canary_token if self.settings.gateway_canary_token else None)
+        )
+        effective_block_threshold = (
+            context.block_threshold
+            if (context and context.block_threshold is not None)
+            else self.settings.gateway_block_threshold
+        )
+        effective_sanitize_threshold = (
+            context.sanitize_threshold
+            if (context and context.sanitize_threshold is not None)
+            else self.settings.gateway_sanitize_threshold
+        )
+        effective_collection = context.collection_name if context else None
+        effective_org_id = context.organization_id if context else self.organization_id
+        effective_project_id = context.project_id if context else None
 
         # ========== Layer 0: Structural Attack Detector (always runs first) ==========
         structural_start = time.perf_counter()
-        structural_result: DetectionResult = self.structural_detector.detect(request.prompt)
+        structural_result: DetectionResult = self.structural_detector.detect(
+            request.prompt, canary_token=effective_canary
+        )
         structural_latency = round((time.perf_counter() - structural_start) * 1000, 2)
 
         # Fast-path: Critical structural detections block immediately (non-negotiable)
@@ -434,17 +544,26 @@ class RuntimeEnforcer:
                 correlation_id=correlation_id,
                 timestamp=datetime.now(timezone.utc),
             )
-            self._record_audit_event(decision, request)
+            self._record_audit_event(
+                decision,
+                request,
+                organization_id=effective_org_id,
+                project_id=effective_project_id,
+            )
             return decision
 
         # ========== Layer 1: Heuristics & Canary ==========
-        heur_triggered, heur_tech, heur_score, heur_expl = self._inspect_heuristics(request.prompt)
+        heur_triggered, heur_tech, heur_score, heur_expl = self._inspect_heuristics(
+            request.prompt, canary_token=effective_canary
+        )
 
         # ========== Layer 1.5: Fast ML Classifier (<1ms) ==========
         ml_triggered, ml_tech, ml_conf, ml_expl = self._inspect_ml_classifier(request.prompt)
 
         # ========== Layer 2: Semantic Vector Match (<20ms) ==========
-        sim_score, vec_tech, _ = await self._inspect_vector_similarity(request.prompt)
+        sim_score, vec_tech, vec_payload = await self._inspect_vector_similarity(
+            request.prompt, collection_name=effective_collection
+        )
 
         # ========== Layer 2.5: Contrastive Benign Margin Scoring ==========
         sim_benign, margin = await self._compute_benign_contrast(request.prompt, sim_score)
@@ -503,15 +622,20 @@ class RuntimeEnforcer:
 
         # Layer 2: Vector Similarity (probabilistic)
         if sim_score > 0.0:
+            is_quarantine = bool(vec_payload and vec_payload.get("quarantine"))
             # Contrastive benign suppression: if prompt is more similar to benign usage than attacks, suppress vector signal
-            benign_suppressed = margin <= -0.05 and sim_benign >= 0.70
+            # Outage quarantine cannot be suppressed by benign contrast
+            benign_suppressed = (not is_quarantine) and (margin <= -0.05 and sim_benign >= 0.70)
             vec_sev = SeverityEnum.safe
             vec_decision = "allow"
             if not benign_suppressed:
-                if sim_score >= self.settings.gateway_block_threshold:
+                if is_quarantine:
+                    vec_sev = SeverityEnum.critical
+                    vec_decision = "block"
+                elif sim_score >= effective_block_threshold:
                     vec_sev = SeverityEnum.high
                     vec_decision = "block"
-                elif sim_score >= self.settings.gateway_sanitize_threshold:
+                elif sim_score >= effective_sanitize_threshold:
                     vec_sev = SeverityEnum.medium
                     vec_decision = "sanitize"
                 elif sim_score >= 0.5:
@@ -524,7 +648,7 @@ class RuntimeEnforcer:
                 "severity": vec_sev,
                 "confidence": sim_score,
                 "detections": [{"technique": vec_tech, "similarity": sim_score, "margin": margin, "benign_similarity": sim_benign}],
-                "metadata": {"margin": margin, "benign_similarity": sim_benign, "benign_suppressed": benign_suppressed},
+                "metadata": {"margin": margin, "benign_similarity": sim_benign, "benign_suppressed": benign_suppressed, "quarantine": is_quarantine},
                 "deterministic": False,
             })
 
@@ -564,10 +688,10 @@ class RuntimeEnforcer:
                 active_signals = [s for s in prob_signals if s["decision"] != "allow" or s["metadata"].get("benign_suppressed", False)]
                 if active_signals:
                     max_prob_severity = self._max_severity([s["severity"] for s in active_signals])
-                    if max_prob_severity == SeverityEnum.high:
+                    if max_prob_severity in (SeverityEnum.critical, SeverityEnum.high):
                         action = EnforceActionEnum.block
-                        severity = SeverityEnum.high
-                        risk_score = 80
+                        severity = max_prob_severity
+                        risk_score = 95 if max_prob_severity == SeverityEnum.critical else 80
                     elif max_prob_severity == SeverityEnum.medium:
                         action = EnforceActionEnum.sanitize
                         severity = SeverityEnum.medium
@@ -620,7 +744,12 @@ class RuntimeEnforcer:
         )
 
         # Tier 4: Persist audit log
-        self._record_audit_event(decision, request)
+        self._record_audit_event(
+            decision,
+            request,
+            organization_id=effective_org_id,
+            project_id=effective_project_id,
+        )
 
         return decision
 
@@ -629,6 +758,7 @@ class RuntimeEnforcer:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         application_name: str = "ARES Chat Proxy",
+        context: Optional[TenantContext] = None,
     ) -> Tuple[EnforceResponse, str]:
         """
         Inspect last user message and forward to target LLM if allowed/sanitized.
@@ -643,7 +773,7 @@ class RuntimeEnforcer:
             application_name=application_name,
         )
 
-        decision = await self.enforce(req)
+        decision = await self.enforce(req, context=context)
 
         if decision.action == EnforceActionEnum.block:
             refusal = (
@@ -664,17 +794,22 @@ class RuntimeEnforcer:
                     }
                     break
 
-        # Forward to LLM
+        # Forward to LLM with circuit breaker
         client = LLMClient(settings=self.settings)
+        llm_breaker = get_circuit_breaker(f"llm_{self.settings.victim_provider}")
         try:
             target_model = model or self.settings.groq_default_model
-            resp = await client.complete(
+            resp = await llm_breaker.execute(
+                client.complete,
                 messages=effective_messages,
                 provider=self.settings.victim_provider,
                 model=target_model,
                 temperature=0.7,
             )
             return decision, resp.text
+        except CircuitBreakerOpenError as cbe:
+            logger.error("Downstream LLM circuit breaker open: %s", cbe)
+            return decision, f"[ARES Gateway Alert] Target LLM circuit breaker open: {cbe}"
         except Exception as exc:
             logger.error("Downstream LLM call failed: %s", exc)
             return decision, f"[ARES Gateway Alert] Target LLM provider error: {exc}"

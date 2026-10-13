@@ -421,13 +421,19 @@ class StructuralAttackDetector:
         }
         return order[severity] >= order[self.severity_threshold]
 
-    def detect(self, text: str, context: Optional[str] = None) -> DetectionResult:
+    def detect(
+        self,
+        text: str,
+        context: Optional[str] = None,
+        canary_token: Optional[str] = None,
+    ) -> DetectionResult:
         """
         Detect structural attack patterns in text.
         
         Args:
             text: The prompt/text to analyze
             context: Optional conversation context for multi-turn analysis
+            canary_token: Optional dynamic/tenant-specific canary token to trap extractions
             
         Returns:
             DetectionResult with all matches and aggregated decision
@@ -453,6 +459,21 @@ class StructuralAttackDetector:
                     rule_id=rule_id,
                 )
                 result.add_detection(detection)
+
+        # Dynamic per-tenant canary token verification (if not already compiled)
+        if canary_token and canary_token != self.canary_token and canary_token in full_text:
+            pos = full_text.find(canary_token)
+            detection = Detection(
+                attack_type=AttackType.DATA_EXFILTRATION,
+                pattern_name="canary_token_leak",
+                matched_text=canary_token,
+                position=pos,
+                severity=SeverityLevel.CRITICAL,
+                confidence=1.0,
+                description=f"Tenant canary token '{canary_token}' detected in prompt",
+                rule_id="ARS-CANARY-001",
+            )
+            result.add_detection(detection)
         
         # Log high-severity detections
         for d in result.detections:

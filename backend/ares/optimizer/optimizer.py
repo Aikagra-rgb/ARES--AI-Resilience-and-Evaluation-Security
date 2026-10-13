@@ -37,8 +37,8 @@ from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
-# Phase 4 hardener fallback: Nemotron first, then Gemini, then Groq, then local Ollama.
-_HARDENER_FALLBACK_ORDER = (LLMProvider.NVIDIA, LLMProvider.GEMINI, LLMProvider.GROQ, LLMProvider.OLLAMA)
+# Local-first hardener fallback: Local Ollama first, then NVIDIA Nemotron, Gemini, Groq.
+_HARDENER_FALLBACK_ORDER = (LLMProvider.OLLAMA, LLMProvider.NVIDIA, LLMProvider.GEMINI, LLMProvider.GROQ)
 
 
 _HARDENER_SYSTEM_PROMPT = """\
@@ -157,6 +157,8 @@ class PromptOptimizer:
         """Resolve the model id for a hardener provider."""
         if config.hardener_model and provider == config.hardener_provider:
             return config.hardener_model
+        if provider == LLMProvider.OLLAMA:
+            return self.settings.ollama_default_model
         if provider == LLMProvider.NVIDIA:
             return self.settings.hardener_model or self.settings.nvidia_default_model
         if provider == LLMProvider.GEMINI:

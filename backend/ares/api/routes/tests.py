@@ -386,7 +386,7 @@ async def create_and_run_test(request: CreateTestRequest) -> TestRunResponse:
         log.append(ExecutionLogEvent(
             timestamp=completed_at,
             stage="Complete",
-            message=f"Evaluation complete. ASR={asr:.1%}  Robustness={getattr(report, 'overall_robustness_score', 1-asr):.1%}",
+            message=f"Evaluation complete. ASR={asr:.1%}  Robustness={getattr(report, 'overall_robustness_score', (1 - asr) * 100):.1f}/100",
             level="info",
         ))
 
@@ -495,7 +495,7 @@ async def get_recent_tests() -> List[RecentTestItem]:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             except Exception:
                 ts = _now()
-            asr = data.get("attack_success_rate", 0.133)
+            asr = data.get("overall_asr", 0.0)
             items.append(RecentTestItem(
                 id="nemotron-eval-001",
                 timestamp=ts,

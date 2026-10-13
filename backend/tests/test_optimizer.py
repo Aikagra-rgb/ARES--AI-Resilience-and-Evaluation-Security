@@ -383,6 +383,7 @@ async def test_prompt_optimizer_gemini_fallback_after_nvidia_failure():
     config = HardeningConfig(
         target_prompt="You are a banking assistant.",
         domain="financial",
+        hardener_provider=LLMProvider.NVIDIA,
         target_robustness_threshold=90.0,
         max_iterations=1,
     )

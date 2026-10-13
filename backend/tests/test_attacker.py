@@ -532,9 +532,9 @@ class TestAttackerLoop:
         config = AttackConfig(target_prompt="Test")
         assert config.max_attempts == 20
         assert config.mode == "dynamic"
-        assert config.attacker_provider == "groq"
-        assert config.victim_provider == "groq"
-        assert config.judge_provider == "gemini"
+        assert config.attacker_provider == "ollama"
+        assert config.victim_provider == "ollama"
+        assert config.judge_provider == "ollama"
         assert config.canary_token == "CANARY_ARES_SECRET_42"
 
     @pytest.mark.asyncio

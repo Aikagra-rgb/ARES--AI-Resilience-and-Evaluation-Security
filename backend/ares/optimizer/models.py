@@ -34,12 +34,12 @@ class HardeningConfig(BaseModel):
         description="List of hardening strategies to apply",
     )
     hardener_provider: LLMProvider = Field(
-        default=LLMProvider.NVIDIA,
-        description="LLM provider used to synthesize hardened prompts (default: NVIDIA Nemotron)",
+        default=LLMProvider.OLLAMA,
+        description="LLM provider used to synthesize hardened prompts (default: local Ollama)",
     )
     hardener_model: Optional[str] = Field(
-        default=None,
-        description="Specific model identifier for prompt synthesis (e.g. nvidia/nemotron-3-nano-omni-30b-a3b-reasoning)",
+        default="llama3.1:8b",
+        description="Specific model identifier for prompt synthesis (default: llama3.1:8b)",
     )
     target_robustness_threshold: float = Field(
         default=90.0,

@@ -21,24 +21,27 @@ if str(backend_dir) not in sys.path:
 
 @pytest.fixture(scope="session")
 def pg_engine():
-    """Create a PostgreSQL engine for the test session."""
-    # Use the DATABASE_URL from environment or default to local test database
-    database_url = os.environ.get("DATABASE_URL", "postgresql+psycopg://postgres:postgres@localhost:5432/ares_test")
-    engine = create_engine(database_url)
-    
-    # Create all tables
-    from app.database import Base
-    Base.metadata.create_all(bind=engine)
-    
-    yield engine
-    
-    # Clean up
-    engine.dispose()
+    """Create a PostgreSQL engine for the test session if available."""
+    database_url = os.environ.get("DATABASE_URL", "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test")
+    engine = create_engine(database_url, connect_args={"connect_timeout": 2})
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        from app.database import Base
+        Base.metadata.create_all(bind=engine)
+        yield engine
+        engine.dispose()
+    except Exception:
+        # PostgreSQL unavailable in local dev environment
+        yield None
 
 
 @pytest.fixture(scope="function")
 def db_session(pg_engine):
-    """Create a new database session for each test, truncating tables after."""
+    """Create a new database session for each test if PostgreSQL is available."""
+    if pg_engine is None:
+        yield None
+        return
     connection = pg_engine.connect()
     transaction = connection.begin()
     
@@ -55,7 +58,10 @@ def db_session(pg_engine):
 
 @pytest.fixture(autouse=True)
 def truncate_tables(db_session):
-    """Truncate all tables after each test to ensure isolation."""
+    """Truncate all tables after each test to ensure isolation (if DB is active)."""
+    if db_session is None:
+        yield
+        return
     yield
     # Truncate all tables in reverse dependency order
     from app.models import (

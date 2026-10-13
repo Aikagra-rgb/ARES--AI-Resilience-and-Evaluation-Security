@@ -83,9 +83,9 @@ class AttackConfig:
     category: Optional[AttackCategory] = None     # None = use all categories
     mode: str = "dynamic"                         # "dynamic" | "hybrid" | "static"
     max_attempts: int = 20
-    attacker_provider: str = "groq"               # fast generator
-    victim_provider: str = "groq"                 # model being tested
-    judge_provider: str = "gemini"                # independent arbiter
+    attacker_provider: str = "ollama"             # local generator
+    victim_provider: str = "ollama"               # model being tested
+    judge_provider: str = "ollama"                # local arbiter
     attacker_model: Optional[str] = None
     victim_model: Optional[str] = None
     judge_model: Optional[str] = None
