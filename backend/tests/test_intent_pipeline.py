@@ -118,3 +118,44 @@ def test_sklearn_intent_classifier_fit_predict_and_accuracy(tmp_path: Path):
     loaded_clf.load()
     res2 = loaded_clf.predict(coding_query)
     assert res2.intent == PromptIntent.CODING_TECHNICAL
+
+
+@pytest.mark.asyncio
+async def test_qdrant_exemplar_store_indexing_and_retrieval():
+    """Verify Qdrant exemplar store indexes pairs and formats in-context demonstrations."""
+    from qdrant_client import QdrantClient
+    from ares.intent.exemplar_store import QdrantExemplarStore, PromptExemplar, SEED_EXEMPLARS
+    from ares.vectordb.store import QdrantStore
+    from unittest.mock import AsyncMock
+
+    mock_embedder = AsyncMock()
+    # Return deterministic pseudo-vectors based on query hash
+    mock_embedder.embed_text = AsyncMock(side_effect=lambda text: [0.1] * 768)
+
+    in_memory_client = QdrantClient(":memory:")
+    base_store = QdrantStore(client=in_memory_client)
+    base_store.vector_size = 768
+
+    store = QdrantExemplarStore(qdrant_store=base_store, embedder=mock_embedder)
+    store.collection_name = "test_prompt_exemplars"
+
+    # Batch index seed exemplars
+    count = await store.batch_index_exemplars(SEED_EXEMPLARS)
+    assert count == len(SEED_EXEMPLARS)
+
+    # Search for coding exemplar
+    hits = await store.search_exemplars(
+        query_prompt="Write a Python script for quicksort",
+        intent=PromptIntent.CODING_TECHNICAL,
+        limit=2,
+    )
+    assert len(hits) > 0
+    assert hits[0].intent == PromptIntent.CODING_TECHNICAL
+    assert hits[0].token_savings_pct > 0.0
+
+    # Format few-shot block
+    block = store.format_few_shot_block(hits)
+    assert "IN-CONTEXT OPTIMIZATION DEMONSTRATIONS" in block
+    assert "UNOPTIMIZED:" in block
+    assert "OPTIMIZED" in block
+

@@ -17,6 +17,12 @@ from ares.intent.classifier import (
     SklearnIntentClassifier,
 )
 
+from ares.intent.exemplar_store import (
+    PromptExemplar,
+    QdrantExemplarStore,
+    SEED_EXEMPLARS,
+)
+
 __all__ = [
     "PromptIntent",
     "OptimizationDirective",
@@ -29,4 +35,7 @@ __all__ = [
     "IntentClassificationResult",
     "BaseIntentClassifier",
     "SklearnIntentClassifier",
+    "PromptExemplar",
+    "QdrantExemplarStore",
+    "SEED_EXEMPLARS",
 ]
