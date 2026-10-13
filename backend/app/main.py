@@ -44,6 +44,7 @@ from ares.api.routes import (
     tests as ares_tests,
     models as ares_models,
     moderation as ares_moderation,
+    optimizer as ares_optimizer,
 )
 from ares.observability.metrics import (
     get_metrics,
@@ -154,6 +155,7 @@ app.include_router(ares_tests.router, dependencies=_auth)
 app.include_router(ares_gateway.router, dependencies=_auth)
 app.include_router(ares_models.router, dependencies=_auth)
 app.include_router(ares_moderation.router, dependencies=_auth)
+app.include_router(ares_optimizer.router, dependencies=_auth)
 
 # Explicit v1 aliases for frontend compatibility
 @app.get("/api/v1/stats", tags=["stats"], dependencies=_auth)
