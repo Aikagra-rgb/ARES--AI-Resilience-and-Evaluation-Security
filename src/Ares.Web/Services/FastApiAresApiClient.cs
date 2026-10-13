@@ -334,6 +334,13 @@ public sealed class FastApiAresApiClient : IAresApiClient
     public Task<GatewayStatusResponse> GetGatewayStatusAsync(CancellationToken cancellationToken) =>
         SendLiveAsync<GatewayStatusResponse>(HttpMethod.Get, ["api/gateway/status"], null, cancellationToken);
 
+    public Task<OptimizePromptResponse> OptimizePromptAsync(OptimizePromptRequest request, CancellationToken cancellationToken) =>
+        SendLiveAsync<OptimizePromptResponse>(HttpMethod.Post, ["api/v1/optimizer/optimize", "api/optimizer/optimize"], request, cancellationToken);
+
+    public Task<IReadOnlyList<IntentInfoResponse>> GetIntentCategoriesAsync(CancellationToken cancellationToken) =>
+        SendLiveAsync<IReadOnlyList<IntentInfoResponse>>(HttpMethod.Get, ["api/v1/optimizer/intents", "api/optimizer/intents"], null, cancellationToken);
+
+
     /// <summary>
     /// Calls the first route that exists (alternates are only tried on HTTP 404) and throws a
     /// descriptive <see cref="HttpRequestException"/> on any failure. Never returns mock data.

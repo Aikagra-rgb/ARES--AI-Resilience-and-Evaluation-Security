@@ -296,17 +296,21 @@ class QdrantExemplarStore:
         Search Qdrant for the most relevant prompt optimization demonstrations.
         """
         self.ensure_collection()
+        try:
+            info = self.qdrant_store.client.get_collection(self.collection_name)
+            if info.points_count == 0:
+                await self.batch_index_exemplars(SEED_EXEMPLARS)
+        except Exception as exc:
+            logger.warning("Could not auto-seed exemplars: %s", exc)
+
         query_vector = await self.embedder.embed_text(query_prompt)
 
+        # Build filter with intent
         must_conditions: List[models.FieldCondition] = []
         if intent is not None:
             intent_val = intent.value if isinstance(intent, PromptIntent) else str(intent)
             must_conditions.append(
                 models.FieldCondition(key="intent", match=models.MatchValue(value=intent_val))
-            )
-        if domain is not None:
-            must_conditions.append(
-                models.FieldCondition(key="domain", match=models.MatchValue(value=domain))
             )
 
         query_filter = models.Filter(must=must_conditions) if must_conditions else None
@@ -318,6 +322,7 @@ class QdrantExemplarStore:
             limit=limit,
             with_payload=True,
         )
+
 
         results: List[PromptExemplar] = []
         for p in response.points:

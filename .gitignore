@@ -68,3 +68,9 @@ qdrant_data/
 
 # Docker
 docker-compose.override.yml
+
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo

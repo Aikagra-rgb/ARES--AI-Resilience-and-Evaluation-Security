@@ -183,6 +183,78 @@ public sealed class MockAresApiClient : IAresApiClient
         return Task.FromResult(new GatewayStatusResponse("ACTIVE", 3695, 0.82, 0.68, true, "1.0.0"));
     }
 
+    public Task<OptimizePromptResponse> OptimizePromptAsync(OptimizePromptRequest request, CancellationToken cancellationToken)
+    {
+        var isMalicious = request.Prompt.Contains("ignore", StringComparison.OrdinalIgnoreCase)
+            || request.Prompt.Contains("override", StringComparison.OrdinalIgnoreCase)
+            || request.Prompt.Contains("DAN", StringComparison.OrdinalIgnoreCase);
+
+        if (isMalicious && !request.AllowHarmful)
+        {
+            return Task.FromResult(new OptimizePromptResponse(
+                "SECURITY_BLOCKED",
+                request.Prompt,
+                null,
+                "SYSTEM_DIRECTIVE",
+                0.98,
+                "Zero-Trust Guardrail Directive",
+                request.Prompt.Split(' ').Length,
+                0,
+                0.0,
+                "0%",
+                0.0,
+                "BLOCKED_ADVERSARIAL",
+                95.0,
+                3.2,
+                0,
+                "Blocked by ARES Structural Attack Detector: detected high-severity attack pattern."
+            ));
+        }
+
+        var intent = request.Prompt.Contains("def ", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("code", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("json", StringComparison.OrdinalIgnoreCase)
+            ? "CODING_TECHNICAL"
+            : request.Prompt.Contains("extract", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("table", StringComparison.OrdinalIgnoreCase)
+                ? "DATA_EXTRACTION_JSON"
+                : "ANALYTICAL_QA";
+
+        var origTokens = Math.Max(12, (int)(request.Prompt.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length * 1.3));
+        var optTokens = (int)(origTokens * 0.58);
+        var savingsPct = Math.Round((double)(origTokens - optTokens) / origTokens, 2);
+
+        var optimized = $"[Role: Senior Specialist]\nExecute the following core task with high precision and concise output:\n{request.Prompt.Trim()}\nConstraints: Omit pleasantries, optimize context, adhere strictly to specified schema.";
+
+        return Task.FromResult(new OptimizePromptResponse(
+            "OPTIMIZED",
+            request.Prompt,
+            optimized,
+            intent,
+            0.965,
+            "Technical & Structural Efficiency Directive",
+            origTokens,
+            optTokens,
+            savingsPct,
+            $"{(int)(savingsPct * 100)}%",
+            0.942,
+            "ALLOW",
+            5.0,
+            24.8,
+            2,
+            "Pruned conversational filler, normalized constraints, and enforced schema."
+        ));
+    }
+
+    public Task<IReadOnlyList<IntentInfoResponse>> GetIntentCategoriesAsync(CancellationToken cancellationToken)
+    {
+        return Task.FromResult<IReadOnlyList<IntentInfoResponse>>([
+            new IntentInfoResponse("CODING_TECHNICAL", "Coding & Technical Engineering", 30.0, ["Exact signatures", "Types"], ["Conversational padding", "Repetitive comments"], ["Markdown fenced code blocks"]),
+            new IntentInfoResponse("DATA_EXTRACTION_JSON", "Data Extraction & Structured JSON", 45.0, ["Schema fields", "Types"], ["Conversational preamble", "Explanations"], ["Valid JSON output only"]),
+            new IntentInfoResponse("ANALYTICAL_QA", "Analytical Q&A & Research", 40.0, ["Core query criteria"], ["Greeting fluff", "Meta-dialogue"], ["Numbered bullet points"]),
+            new IntentInfoResponse("CREATIVE_WRITING", "Creative Writing & Copywriting", 20.0, ["Tone and voice attributes"], ["Vague instructions"], ["Structured section headers"]),
+            new IntentInfoResponse("SYSTEM_DIRECTIVE", "System Directives & Security Policy", 35.0, ["Security boundaries", "Canary tokens"], ["Redundant verbiage"], ["Strict XML tag delimiters"])
+        ]);
+    }
+
+
 
     private async Task<TestRun> RequireRunAsync(string testId, CancellationToken cancellationToken) => await GetTestAsync(testId, cancellationToken) ?? throw new KeyNotFoundException($"Test {testId} was not found.");
 

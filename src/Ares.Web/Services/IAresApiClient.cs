@@ -52,4 +52,9 @@ public interface IAresApiClient
     // ── Runtime Enforcement Gateway ──────────────────────────────────────────
     Task<GatewayEnforceResponse> EnforcePromptAsync(GatewayEnforceRequest request, CancellationToken cancellationToken);
     Task<GatewayStatusResponse> GetGatewayStatusAsync(CancellationToken cancellationToken);
+
+    // ── User Prompt Optimizer ────────────────────────────────────────────────
+    Task<OptimizePromptResponse> OptimizePromptAsync(OptimizePromptRequest request, CancellationToken cancellationToken);
+    Task<IReadOnlyList<IntentInfoResponse>> GetIntentCategoriesAsync(CancellationToken cancellationToken);
 }
+

@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="..\build\Ares.Web.props" />
-</Project>

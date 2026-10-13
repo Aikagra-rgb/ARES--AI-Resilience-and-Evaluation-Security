@@ -187,8 +187,11 @@ class UserPromptOptimizer:
         # ---------------------------------------------------------------------
         system_instruction = (
             f"You are the ARES Prompt Compiler & Optimization Engine.\n"
-            f"Your objective: Rewrite and compress the user's prompt to minimize token usage "
-            f"while retaining 100% of its technical intent, domain requirements, and core semantics.\n\n"
+            f"CRITICAL MISSION: You are NOT an AI assistant answering or executing the user's prompt.\n"
+            f"Your ONLY job is to REWRITE and COMPRESS the user's prompt into an ultra-concise, high-efficiency prompt "
+            f"that another AI model will execute.\n"
+            f"Strip pleasantries ('Hey AI', 'Could you please', 'Thanks so much'), conversational padding, and redundant words.\n"
+            f"Preserve 100% of the core instructions, technical constraints, types, and schema specifications.\n\n"
             f"INTENT DIRECTIVE: {directive.display_name}\n"
             f"{directive.system_instruction}\n\n"
             f"STRICT PRESERVATION RULES:\n"
@@ -198,13 +201,13 @@ class UserPromptOptimizer:
             + f"\n\nSTRUCTURAL ENFORCEMENT:\n"
             + "\n".join(f"- {r}" for r in directive.structural_enforcements)
             + f"\n\nOUTPUT FORMAT:\n"
-            f"Output ONLY the optimized prompt text. Do not provide commentary, markdown fences, or pleasantries."
+            f"Output ONLY the rewritten, compressed prompt text. Do NOT prepend explanations, introductions, or pleasantries."
         )
 
         user_content_parts = []
         if few_shot_block:
             user_content_parts.append(few_shot_block)
-        user_content_parts.append(f"ORIGINAL UNOPTIMIZED PROMPT:\n{user_prompt}\n\nOPTIMIZED PROMPT:")
+        user_content_parts.append(f"ORIGINAL UNOPTIMIZED PROMPT:\n{user_prompt}\n\nREWRITTEN OPTIMIZED PROMPT:")
         user_message_text = "\n\n".join(user_content_parts)
 
         messages = [
@@ -228,11 +231,34 @@ class UserPromptOptimizer:
             )
             raw_out = getattr(response, "text", None) or getattr(response, "content", "")
             optimized_text = str(raw_out).strip()
-            # Clean accidental markdown code wrapper if model emitted one
+            # Clean accidental markdown code wrapper if model emitted one around prompt
             if optimized_text.startswith("```") and optimized_text.endswith("```"):
                 lines = optimized_text.splitlines()
-                if len(lines) >= 3:
+                if len(lines) >= 3 and not intent == PromptIntent.DATA_EXTRACTION_JSON:
                     optimized_text = "\n".join(lines[1:-1]).strip()
+
+            # Strip common conversational preambles
+            for preamble in [
+                "here is the optimized prompt:",
+                "here is the compressed prompt:",
+                "here is the rewritten prompt:",
+                "optimized prompt:",
+                "rewritten prompt:",
+            ]:
+                if optimized_text.lower().startswith(preamble):
+                    optimized_text = optimized_text[len(preamble):].strip()
+
+            # If model wrote source code instead of a prompt instruction (e.g. async def, def, import)
+            if any(optimized_text.startswith(kw) for kw in ("def ", "async def ", "import ", "from ", "class ")):
+                compressed_fallback = self._fallback_rule_compress(user_prompt)
+                optimized_text = f"Write Python script:\n- Task: {compressed_fallback}"
+
+            # If model produced no compression or hallucinated extra bulk, fall back to rule-based compression
+            if _estimate_tokens(optimized_text) >= orig_tokens:
+                compressed_fallback = self._fallback_rule_compress(user_prompt)
+                if _estimate_tokens(compressed_fallback) < orig_tokens:
+                    optimized_text = compressed_fallback
+
         except Exception as exc:
             logger.warning("LLM optimization synthesis failed (%s), falling back to structural compression", exc)
             optimized_text = self._fallback_rule_compress(user_prompt)
@@ -250,6 +276,7 @@ class UserPromptOptimizer:
 
         opt_tokens = _estimate_tokens(optimized_text)
         token_savings_pct = round(max(0.0, (orig_tokens - opt_tokens) / orig_tokens), 3) if orig_tokens > 0 else 0.0
+
 
         status = OptimizationStatus.SUCCESS
         reasoning = "Prompt successfully optimized and compressed."

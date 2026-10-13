@@ -323,4 +323,38 @@ public sealed record GatewayStatusResponse(
     bool CanaryTokenConfigured,
     string Version);
 
+// ── User Prompt Optimizer DTOs ───────────────────────────────────────────────
+public sealed record OptimizePromptRequest(
+    string Prompt,
+    string? Domain = null,
+    double TargetFidelity = 0.85,
+    bool AllowHarmful = false);
+
+public sealed record OptimizePromptResponse(
+    string Status,
+    string OriginalPrompt,
+    string? OptimizedPrompt,
+    string Intent,
+    double IntentConfidence,
+    string DirectiveName,
+    int OriginalTokens,
+    int OptimizedTokens,
+    double TokenSavingsPct,
+    string TokenSavingsDisplay,
+    double SemanticFidelity,
+    string SecurityVerdict,
+    double SecurityRiskScore,
+    double LatencyMs,
+    int ExemplarsUsed,
+    string? Reasoning);
+
+public sealed record IntentInfoResponse(
+    string Intent,
+    string DisplayName,
+    double TargetTokenReductionPct,
+    IReadOnlyList<string> PreservationRules,
+    IReadOnlyList<string> PruningRules,
+    IReadOnlyList<string> StructuralEnforcements);
+
+
 
