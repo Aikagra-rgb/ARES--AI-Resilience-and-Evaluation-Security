@@ -159,3 +159,29 @@ async def test_qdrant_exemplar_store_indexing_and_retrieval():
     assert "UNOPTIMIZED:" in block
     assert "OPTIMIZED" in block
 
+
+def test_scaled_5000_dataset_and_model_loading():
+    """Verify that the scaled 5,000 dataset and trained model artifact load and predict accurately."""
+    mgr = IntentDatasetManager()
+    full_data = mgr.load_dataset_jsonl("scaled_5000_full.jsonl")
+    assert len(full_data) >= 5000
+
+    # Ensure all 5 intents have substantial representation
+    by_intent = {}
+    for sample in full_data:
+        by_intent[sample.intent] = by_intent.get(sample.intent, 0) + 1
+    assert len(by_intent) == 5
+    for intent, count in by_intent.items():
+        assert count >= 900, f"Intent {intent} has only {count} samples"
+
+    # Verify scaled model artifact
+    model_path = mgr.data_dir / "intent_classifier_scaled_5000.joblib"
+    assert model_path.exists()
+
+    clf = SklearnIntentClassifier(model_path=model_path)
+    res = clf.predict("Extract invoice table into strict JSON schema with tax and subtotal")
+    assert res.intent == PromptIntent.DATA_EXTRACTION_JSON
+    assert res.confidence >= 0.50
+    assert res.latency_ms < 15.0
+
+
