@@ -61,7 +61,7 @@ jobs:
       - name: Run pytest unit test suite
         working-directory: backend
         env:
-          DATABASE_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/ares_test"
+          DATABASE_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test"
           GROQ_API_KEY: "mock-groq-key"
           GEMINI_API_KEY: "mock-gemini-key"
           NVIDIA_API_KEY: "mock-nvidia-key"
@@ -70,7 +70,7 @@ jobs:
           ARES_API_KEY: "ares-dev-secret-key-42"
           ENVIRONMENT: "test"
         run: |
-          pytest -m "not integration" -v --durations=10
+          pytest -m "not integration" -v --durations=10 --tb=short
 
   frontend-tests:
     name: Frontend Tests (.NET 8.0)
