@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("ARES_AUTH_ENABLED", "false")
 os.environ.setdefault("ALLOW_DEV_IDENTITY", "true")
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test")
 
 # Add backend directory to sys.path so 'ares' can be imported
 backend_dir = Path(__file__).resolve().parent.parent
@@ -27,6 +28,7 @@ def pg_engine():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+        import app.models  # Ensure all SQLAlchemy models are registered
         from app.database import Base
         Base.metadata.create_all(bind=engine)
         yield engine

@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test-orchestrator.db")
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test")
 os.environ.setdefault("RUN_WORKER", "false")
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("EXECUTION_PAYLOAD_ENCRYPTION_KEY", "Jz7cmIiWycPoeJ4u0Vcg5n_lDrU9pCqQR81hP25wUco=")

@@ -93,7 +93,7 @@ def api_error(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.auto_create_schema and settings.environment != "test":
+    if settings.auto_create_schema:
         try:
             Base.metadata.create_all(bind=engine)
         except Exception:
