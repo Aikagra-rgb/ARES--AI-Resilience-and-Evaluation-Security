@@ -1,159 +1,173 @@
 # ARES — AI Resilience and Evaluation Security System
 
 [![CI Pipeline](https://github.com/NeoGonsalves/ARES-AI-Resilience-and-Evaluation-Security-System/actions/workflows/ci.yml/badge.svg)](https://github.com/NeoGonsalves/ARES-AI-Resilience-and-Evaluation-Security-System/actions)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![.NET 8.0](https://img.shields.io/badge/.NET-8.0-purple.svg)](https://dotnet.microsoft.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
-[![Qdrant Cloud](https://img.shields.io/badge/Qdrant%20Cloud-3%2C695%20Vectors-red.svg)](https://qdrant.tech/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20Corpus-red.svg)](https://qdrant.tech/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
+[![LoRA](https://img.shields.io/badge/LoRA-4--bit%20QLoRA-orange.svg)](https://github.com/huggingface/peft)
+
+ARES is an enterprise-grade AI security gateway, resilience testing engine, and prompt optimization platform designed to safeguard LLM applications against adversarial attacks, prompt injections, and token waste.
 
 ---
 
-## 🛡️ Current Architecture (P0.0 Stabilization Complete)
+## 🛡️ Core Capabilities
 
-This branch (`newBranch`) represents a **clean, production-grade foundation** after the P0.0 stabilization. All experimental v2.0 features (consensus engine, event bus, threat intel pipeline, SDK middleware, HMAC signing, ML moderation) have been **archived to `archive/c05f1fd-modules`** per the stabilization plan.
+### 1. Multi-Layer Security Gateway (Strict Severity-Max)
+- **Layer 0 (Structural Detector)**: Deterministic, sub-millisecond regex & pattern matching across 10 attack categories and 5 severity levels.
+- **Layer 1 (Vector Shield)**: Semantic similarity against 3,695 enterprise attack vectors in Qdrant (<20ms).
+- **Layer 2 (ML Classifier)**: Calibrated ComplementNB + TF-IDF model trained on enterprise vulnerability benchmarks.
+- **Fail-Closed Embeddings**: Header-based `x-goog-api-key` authentication with strict fail-closed enforcement (`EMBEDDING_ALLOW_HASH_FALLBACK=false`).
+- **Strict Severity-Max Policy**: Deterministic threat hits cannot be diluted or outvoted by benign similarity scores.
 
-### ✅ What's Stable & Working
+### 2. Enterprise Prompt Optimizer & Intent Classifier
+- **5-Class Intent Taxonomy**: Sub-millisecond TF-IDF + Logistic Regression classification across `coding_technical`, `creative_writing`, `analytical_qa`, `system_directive`, and `data_extraction_json`.
+- **Few-Shot Exemplar Store**: Dynamic Qdrant exemplar search for in-context demonstrations tailored to classified user intent.
+- **4-Bit QLoRA Fine-Tuned Model**: Native fine-tuned adapter on Llama 3.1 8B Instruct delivering ~44.4% token compression while maintaining 0.84+ semantic fidelity.
+- **Dual-Routing Fallback**: Primary routing through local LoRA inference server (`localhost:11435`), with seamless automatic fallback to Ollama (`llama3.1:8b-instruct`) and cloud LLMs (Gemini, Groq, NVIDIA).
 
-| Component | Implementation |
-|-----------|----------------|
-| **Database** | PostgreSQL-only (`DATABASE_URL` required; fails fast if missing) |
-| **Gateway Policy** | Strict Severity-Max: deterministic hits non-negotiable; benign similarity never overrides; outcome = `max_severity` |
-| **Embedder** | `x-goog-api-key` header auth; `EMBEDDING_ALLOW_HASH_FALLBACK=false` (fail closed) |
-| **Frontend** | Blazor **Interactive Server only** (WebAssembly removed); `FastApiAresApiClient` clean DI |
-| **Structural Detector** | Layer 0 deterministic <1ms (10 attack categories, 5 severity levels) |
-| **Vector Shield** | Semantic similarity against 3,695 Qdrant vectors (<20ms) |
-| **ML Classifier** | ComplementNB + TF-IDF (trained via `scripts/train_classifier.py`) |
-| **Metrics** | 40+ Prometheus metrics; `/metrics` secured behind API key |
-| **CI** | PostgreSQL 16 service; `compileall` + `ruff` gates; Python 3.11/3.12 + .NET 8.0 matrix |
+### 3. Red Team Arena & Automated Evaluation
+- Automated adversarial prompt synthesis, payload mutation, and jailbreak simulation.
+- 256-bit entropy canary token tracking to catch system prompt leakages.
+- Multi-provider LLM-as-a-judge evaluation scoring with structured audit logging.
 
-### 🗂️ Archived (Restorable from `archive/c05f1fd-modules`)
-
-- `ares/security/consensus.py` — weighted consensus (diluted deterministic hits)
-- `ares/security/signing.py` — server-side HMAC (unused; client-only in .NET)
-- `ares/security/moderation.py` — ML poisoning prevention (unwired in-memory queue)
-- `ares/sdk/middleware.py` — embedded SDK (duplicate consensus, unwired)
-- `ares/intel/pipeline.py` — threat intel (syntax error, no consumers)
-- `ares/observability/tracing.py` — OTLP tracing (syntax error, no integration)
-- `BlazorAresApiClient.cs` — WebAssembly client (hardcoded dev API key)
+### 4. Interactive Blazor Server UI (.NET 8.0)
+- Single-page management console: Overview Dashboard, Security Gateway live tester, Prompt Optimizer studio, and Red Team Arena.
+- Built exclusively with Blazor Interactive Server for security (no client-side API key leakage).
 
 ---
 
-## 📁 Project Structure
+## 📁 Repository Structure
 
 ```
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml              # PostgreSQL 16 service, compileall+ruff gates, pytest + .NET 8.0
+│       └── ci.yml              # PostgreSQL 16, Python 3.11/3.12, .NET 8.0 matrix (with paths-ignore)
+├── .agents/
+│   └── rules/                  # Workspace development and testing rules
 ├── backend/
-│   ├── app/                    # Platform layer (FastAPI, SQLAlchemy, auth, providers)
-│   │   ├── main.py             # FastAPI app (no rate limiter, /metrics secured)
-│   │   ├── database.py         # PostgreSQL engine & sessions
-│   │   ├── models.py           # ORM models
-│   │   └── orchestrator.py     # Test orchestration
+│   ├── app/                    # FastAPI platform layer (database, ORM models, auth, providers)
 │   ├── ares/
-│   │   ├── config.py           # Unified Settings (PostgreSQL-only, fail-fast validators)
-│   │   ├── gateway/
-│   │   │   ├── enforcer.py     # Strict severity-max policy (NO consensus)
-│   │   │   └── benign_corpus.py
-│   │   ├── vectordb/
-│   │   │   ├── embedder.py     # Header auth, fail-closed fallback
-│   │   │   └── store.py        # Qdrant client
-│   │   ├── security/
-│   │   │   └── structural_detector.py  # Layer 0 deterministic detector
-│   │   ├── redteam/            # Attack generation
-│   │   ├── optimizer/          # Prompt hardening
-│   │   ├── evaluation/         # ML stats, reports, evaluators
-│   │   ├── llm/                # Multi-provider LLM client
-│   │   ├── api/routes/         # Gateway, dashboard, search, stats, corpus, harden, tests
-│   │   └── observability/
-│   │       └── metrics.py      # Prometheus metrics
-│   ├── scripts/
-│   │   └── train_classifier.py # Reproducible ComplementNB training
-│   ├── tests/
-│   │   ├── conftest.py         # PostgreSQL fixtures with table truncation
-│   │   └── test_embedder_url.py# Verifies header auth, no masked key in URL
+│   │   ├── api/routes/         # Gateway, dashboard, optimizer, harden, search, tests
+│   │   ├── gateway/            # Severity-max enforcer & benign corpus
+│   │   ├── vectordb/           # Qdrant store & Gemini/Ollama embedders
+│   │   ├── security/           # Structural detector, circuit breaker, rate limiters
+│   │   ├── intent/             # 5-class intent classifier, 5,000+ dataset scaling, exemplar store
+│   │   ├── optimizer/          # Enterprise prompt optimizer & dual-routing pipeline
+│   │   ├── training/           # 4-bit QLoRA training, GGUF export, PEFT inference server
+│   │   ├── redteam/            # Attack generation & payload operators
+│   │   ├── evaluation/         # ML statistics & report generators
+│   │   ├── llm/                # Multi-provider LLM client (Gemini, Groq, NVIDIA, Ollama)
+│   │   └── observability/      # Prometheus metrics & structured logging
+│   ├── ares_sdk/               # Standalone Python client library
+│   ├── scripts/                # Evaluation & training CLI utilities
+│   ├── tests/                  # 188 automated pytest unit tests
 │   ├── requirements.txt
 │   └── pyproject.toml
 ├── src/
 │   └── Ares.Web/               # Blazor Interactive Server (.NET 8.0)
-│       ├── Program.cs          # No WebAssembly; FastApiAresApiClient DI
-│       ├── App.razor           # No window.ARES_CONFIG; SVG MIME fixed
-│       ├── Pages/              # Overview, Arena, PromptOptimizer, Gateway, Stats
-│       ├── Services/           # FastApiAresApiClient, Mock/Real clients
-│       └── wwwroot/
-├── docs/
-│   └── THREAT_MODEL.md         # STRIDE, trust boundaries, vector/LLM limitations
-├── archive/
-│   └── c05f1fd-modules/        # Git branch with deleted v2.0 modules
-├── IMPLEMENTATION_SUMMARY.md   # P0.0 stabilization details
+├── tests/
+│   └── Ares.Web.Tests/         # 14 .NET xUnit unit tests
+├── docs/                       # Architecture documents, API contracts, threat model
 ├── Ares.sln
 └── README.md
 ```
 
 ---
 
-## 🚀 How to Run
+## 🚀 Teammate Quickstart: Running on Any Machine
 
-### Prerequisites
-- **Python 3.11+** (3.12 recommended)
-- **.NET 8.0 SDK**
-- **PostgreSQL 16** (local `C:\pgsql`, Docker, or CI service)
-- **Qdrant Cloud** (or local instance)
+ARES is engineered to be **fully operational regardless of local GPU availability**. Choose the setup that matches your environment:
 
-### 1. Configure Environment
+### Mode 1: Cloud API (Zero GPU / Zero Local AI Required)
+*Recommended for most development tasks, MacBooks, and standard laptops.*
 
-Create `backend/.env` (or export vars):
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/NeoGonsalves/ARES-AI-Resilience-and-Evaluation-Security-System.git
+   cd ARES-AI-Resilience-and-Evaluation-Security-System
+   ```
 
-```env
-# Security (required in production)
-ARES_API_KEY=<32+ char secret>
-GATEWAY_CANARY_TOKEN=<32+ char secret>
-PROMPT_FINGERPRINT_SECRET=<32+ char secret>
-EXECUTION_PAYLOAD_ENCRYPTION_KEY=<Fernet key>
-ARES_AUTH_ENABLED=true
+2. **Configure `backend/.env`**:
+   ```env
+   # Database (PostgreSQL required)
+   DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/ares
 
-# LLM Providers (at least one)
-GROQ_API_KEY=<key>
-GEMINI_API_KEY=<key>
-NVIDIA_API_KEY=<key>
-OPENAI_API_KEY=<key>
+   # Cloud Providers (at least one)
+   GEMINI_API_KEY=your-gemini-api-key
+   GROQ_API_KEY=your-groq-api-key
 
-# Vector DB
-QDRANT_URL=https://your-cluster.qdrant.io
-QDRANT_API_KEY=<key>
+   # Vector Store (Qdrant Cloud or local)
+   QDRANT_URL=https://your-cluster.qdrant.io
+   QDRANT_API_KEY=your-qdrant-key
 
-# Database (REQUIRED - PostgreSQL only)
-DATABASE_URL=postgresql+psycopg://user:pass@host:5432/ares
-```
+   # Security secrets
+   ARES_API_KEY=your-ares-dev-secret-key-32-chars-min
+   GATEWAY_CANARY_TOKEN=canary-token-secret-value-32-chars
+   PROMPT_FINGERPRINT_SECRET=fingerprint-secret-value-32-chars
+   EXECUTION_PAYLOAD_ENCRYPTION_KEY=your-fernet-key-here
+   ```
 
-### 2. Start Backend
+3. **Start Backend**:
+   ```bash
+   cd backend
+   python -m venv venv
+   source venv/bin/activate  # On Windows: .\venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   python main.py
+   ```
+   Backend API runs at: `http://localhost:8000` (Docs: `http://localhost:8000/docs`)
 
-```powershell
+4. **Start Frontend**:
+   ```bash
+   dotnet run --project src/Ares.Web
+   ```
+   Web UI runs at: `http://localhost:5000`
+
+---
+
+### Mode 2: Local-First with Ollama
+*For developers who want to run prompt inference and embeddings locally.*
+
+1. Install [Ollama](https://ollama.com).
+2. Pull the required models:
+   ```bash
+   ollama pull llama3.1:8b-instruct
+   ollama pull nomic-embed-text
+   ```
+3. Set `PREFER_LOCAL_EMBEDDINGS=true` in `backend/.env`.
+4. Run Backend & Frontend as described above. All evaluations and prompt optimizations will automatically route to your local Ollama daemon.
+
+---
+
+### Mode 3: Native LoRA Adapter GPU Server (NVIDIA RTX GPUs)
+*For developers running with the fine-tuned 4-bit QLoRA adapter on an NVIDIA GPU.*
+
+1. Install training & inference dependencies:
+   ```bash
+   pip install -r backend/ares/training/requirements_training.txt
+   ```
+2. Start the local LoRA inference server:
+   ```bash
+   python backend/ares/training/serve_lora.py --port 11435
+   ```
+3. The ARES optimizer pipeline will automatically detect the server on port 11435 and route prompts through the fine-tuned adapter.
+
+---
+
+## 🧪 Testing & Verification
+
+Both backend and frontend test suites are fully isolated and executable offline without external API dependencies:
+
+```bash
+# Run Backend Test Suite (188 tests)
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python main.py
-```
-- API: http://localhost:8000
-- Swagger: http://localhost:8000/docs
-- Health: http://localhost:8000/healthz
+pytest -m "not integration" -v
 
-### 3. Start Frontend
-
-```powershell
-dotnet run --project src/Ares.Web
-```
-- Dashboard: http://localhost:5000 / https://localhost:5001
-
-### 4. Verify
-
-```powershell
-cd backend
-pytest -m "not integration" -q
-dotnet test Ares.sln
+# Run Frontend .NET Test Suite (14 tests)
+dotnet test Ares.sln --configuration Release
 ```
 
 ---
@@ -161,29 +175,19 @@ dotnet test Ares.sln
 ## 🔧 Key Technical Decisions
 
 | Decision | Rationale |
-|----------|-----------|
-| **PostgreSQL only** | Eliminates SQLite drift; CI/prod parity; fail-fast config |
-| **Severity-Max Gateway** | Deterministic hits cannot be outvoted; no consensus dilution |
-| **Header auth for embedder** | `SecretStr.get_secret_value()` in `x-goog-api-key`; no key in URLs |
-| **Fail-closed embeddings** | `EMBEDDING_ALLOW_HASH_FALLBACK=false` — report degraded, no pseudo-vectors |
-| **Interactive Server only** | No browser secrets; simpler SignalR; smaller attack surface |
-| **No in-memory rate limiter** | Flawed `X-Forwarded-For` trust; per-target limiting in P0 runners |
-| **Cached enforcer** | Single `RuntimeEnforcer` in lifespan; models/benign vectors loaded once |
+| :--- | :--- |
+| **PostgreSQL-Only** | Guarantees schema consistency across local dev, CI service containers, and production. |
+| **Severity-Max Gateway** | Deterministic attack hits cannot be overridden by benign semantic similarity. |
+| **Fail-Closed Embeddings** | Prevents degraded or hash-fallback vectors from bypassing threat shields. |
+| **Blazor Interactive Server** | Eliminates client-side secrets and minimizes attack surface by executing logic server-side. |
+| **Dual-Routing Pipeline** | LoRA adapter server is hot-probed with zero-latency fallback to Ollama and cloud LLMs. |
 
 ---
 
-## 📚 Documentation
+## 📄 Documentation
 
-| File | Description |
-|------|-------------|
-| `docs/THREAT_MODEL.md` | STRIDE, trust boundaries, vector similarity limitations, LLM-as-Defender limitations |
-| `IMPLEMENTATION_SUMMARY.md` | P0.0 stabilization details, archived modules, verification gates |
-| `archive/c05f1fd-modules` | Git branch with deleted v2.0 modules for history |
+- [Threat Model](docs/THREAT_MODEL.md): STRIDE threat assessment, trust boundaries, and mitigation controls.
+- [Architecture Decisions](docs/architecture-decisions.md): Detailed ADR logs on data stores and routing policies.
+- [API Contracts](docs/api-contracts.md): FastAPI REST endpoints and request/response specifications.
 
----
-
-## 📄 License
-
-Developed for high-assurance AI resilience, evaluation, and production gateway enforcement. Architecture documents and technical decisions in [`docs/`](docs/).
-
-*Updated: October 2026 — P0.0 Stabilization Complete*
+*Updated: October 2026*

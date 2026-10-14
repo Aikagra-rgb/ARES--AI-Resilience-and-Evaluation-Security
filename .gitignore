@@ -83,5 +83,7 @@ docker-compose.override.yml
 # .NET
 **/bin/
 **/obj/
+publish/
+**/publish/
 *.user
 *.suo
