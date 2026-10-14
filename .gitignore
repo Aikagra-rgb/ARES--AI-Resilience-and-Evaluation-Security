@@ -40,6 +40,11 @@ venv/
 # Binaries - untracked
 *.joblib
 *.pdf
+*.pt
+*.bin
+*.safetensors
+*.gguf
+*.onnx
 
 # OS
 .DS_Store
