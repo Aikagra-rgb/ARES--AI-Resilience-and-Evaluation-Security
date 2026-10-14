@@ -70,7 +70,14 @@ jobs:
           ARES_API_KEY: "ares-dev-secret-key-42"
           ENVIRONMENT: "test"
         run: |
-          pytest -m "not integration" -v --durations=10 --tb=short
+          set -o pipefail
+          pytest -m "not integration" -v --durations=10 --tb=short | tee test_run.log || {
+            echo "## Pytest Failures" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 60 test_run.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
   frontend-tests:
     name: Frontend Tests (.NET 8.0)
