@@ -224,23 +224,51 @@ class UserPromptOptimizer:
             primary_model = getattr(self.settings, "ollama_optimizer_model", "ares-optimizer:8b") or "ares-optimizer:8b"
             fallback_model = self.settings.hardener_model or "llama3.1:8b"
 
-            try:
-                response = await self.llm_client.complete(
-                    messages=messages,
-                    provider=provider.value if isinstance(provider, LLMProvider) else str(provider),
-                    model=primary_model,
-                    temperature=0.2,
-                    max_tokens=1000,
-                )
-            except Exception as model_err:
-                logger.warning("Primary optimizer '%s' unavailable (%s); falling back to base '%s'", primary_model, model_err, fallback_model)
-                response = await self.llm_client.complete(
-                    messages=messages,
-                    provider=provider.value if isinstance(provider, LLMProvider) else str(provider),
-                    model=fallback_model,
-                    temperature=0.2,
-                    max_tokens=1000,
-                )
+            # 1. First priority: Dedicated Native PEFT LoRA Inference Server (Direct GPU Weights)
+            lora_url = getattr(self.settings, "lora_server_url", "http://localhost:11435/v1")
+            use_lora = getattr(self.settings, "use_lora_server", True)
+            response = None
+
+            if use_lora:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        resp = await client.post(
+                            f"{lora_url}/chat/completions",
+                            json={
+                                "model": "ares-optimizer-lora",
+                                "messages": [{"role": m.role, "content": m.content} for m in messages],
+                                "temperature": 0.2,
+                                "max_tokens": 1000,
+                            },
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            raw_out = data["choices"][0]["message"]["content"]
+                            response = type("Resp", (), {"text": raw_out, "content": raw_out})()
+                            logger.info("Successfully optimized prompt using Native Fine-Tuned LoRA Adapter (GPU)")
+                except Exception as lora_err:
+                    logger.debug("Native LoRA server offline (%s); proceeding to Ollama router", lora_err)
+
+            # 2. Secondary: Ollama ares-optimizer:8b with automatic fallback to llama3.1:8b
+            if response is None:
+                try:
+                    response = await self.llm_client.complete(
+                        messages=messages,
+                        provider=provider.value if isinstance(provider, LLMProvider) else str(provider),
+                        model=primary_model,
+                        temperature=0.2,
+                        max_tokens=1000,
+                    )
+                except Exception as model_err:
+                    logger.warning("Primary optimizer '%s' unavailable (%s); falling back to base '%s'", primary_model, model_err, fallback_model)
+                    response = await self.llm_client.complete(
+                        messages=messages,
+                        provider=provider.value if isinstance(provider, LLMProvider) else str(provider),
+                        model=fallback_model,
+                        temperature=0.2,
+                        max_tokens=1000,
+                    )
             raw_out = getattr(response, "text", None) or getattr(response, "content", "")
             optimized_text = str(raw_out).strip()
             # Clean accidental markdown code wrapper if model emitted one around prompt

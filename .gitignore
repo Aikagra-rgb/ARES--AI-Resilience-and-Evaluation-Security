@@ -45,6 +45,8 @@ venv/
 *.safetensors
 *.gguf
 *.onnx
+checkpoint-*/
+backend/ares/training/artifacts/ares_prompt_optimizer_lora/
 
 # OS
 .DS_Store
