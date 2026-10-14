@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  fastapi:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://ares:password@postgres:5432/ares
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+      - ARES_LORA_SERVER_URL=http://lora-inference:11435
+    depends_on:
+      - postgres
+      - qdrant
+      - redis
+
+  lora-inference:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python backend/ares/training/serve_lora.py --port 11435 --host 0.0.0.0
+    ports:
+      - "11435:11435"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ares
+      POSTGRES_USER: ares
+    ports:
+      - "5432:5432"
+    volumes:
+      - ares_postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ares_qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ares_grafana_data:/var/lib/grafana
+
+volumes:
+  ares_postgres_data:
+  ares_qdrant_data:
+  ares_grafana_data:

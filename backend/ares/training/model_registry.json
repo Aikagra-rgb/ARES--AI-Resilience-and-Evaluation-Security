@@ -1,0 +1,20 @@
+{
+  "default": "ares_optimizer_adapter_full.gguf",
+  "strategy": "unified_multitask_lora",
+  "description": "Single unified 4-bit QLoRA adapter trained across all 5 enterprise intent classes",
+  "per_class": {
+    "coding_technical": "ares_optimizer_adapter_full.gguf",
+    "creative_writing": "ares_optimizer_adapter_full.gguf",
+    "data_extraction_json": "ares_optimizer_adapter_full.gguf",
+    "analytical_qa": "ares_optimizer_adapter_full.gguf",
+    "system_directive": "ares_optimizer_adapter_full.gguf"
+  },
+  "targets": {
+    "coding_technical": {"min_fidelity": 0.85, "target_savings_pct": 0.50},
+    "creative_writing": {"min_fidelity": 0.85, "target_savings_pct": 0.40},
+    "data_extraction_json": {"min_fidelity": 0.85, "target_savings_pct": 0.45},
+    "analytical_qa": {"min_fidelity": 0.85, "target_savings_pct": 0.45},
+    "system_directive": {"min_fidelity": 0.85, "target_savings_pct": 0.40}
+  },
+  "last_updated": "2026-10-14T22:38:00Z"
+}

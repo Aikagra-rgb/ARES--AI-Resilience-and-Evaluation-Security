@@ -159,9 +159,11 @@ def load_fine_tuned_engine(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Serve Fine-Tuned ARES LoRA Model")
     parser.add_argument("--port", type=int, default=11435, help="Server port")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address")
     parser.add_argument("--base-model", type=str, default=DEFAULT_BASE_MODEL, help="Base model")
-    parser.add_argument("--adapter-dir", type=str, default=str(DEFAULT_ADAPTER_DIR), help="Adapter directory")
-    args = parser.parse_args()
+    parser.add_argument("--adapter-dir", "--adapter-path", dest="adapter_dir", type=str, default=str(DEFAULT_ADAPTER_DIR), help="Adapter directory or path")
+    parser.add_argument("--workers", type=int, default=1, help="Worker count")
+    args, _ = parser.parse_known_args()
 
     load_fine_tuned_engine(base_model_name=args.base_model, adapter_dir=Path(args.adapter_dir))
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port)

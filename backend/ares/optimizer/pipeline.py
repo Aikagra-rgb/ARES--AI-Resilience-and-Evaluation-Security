@@ -27,6 +27,17 @@ from ares.vectordb.embedder import GeminiEmbedder
 
 logger = logging.getLogger(__name__)
 
+# Prometheus Metrics Telemetry
+try:
+    from prometheus_client import Counter, Histogram
+    _PROMETHEUS_AVAILABLE = True
+    optimization_requests_total = Counter('ares_optimization_requests_total', 'Total prompt optimization requests', ['intent', 'status'])
+    optimization_latency_seconds = Histogram('ares_optimization_latency_seconds', 'Prompt optimization latency in seconds')
+    token_savings_metric = Histogram('ares_token_savings_pct', 'Token savings percentage', ['intent'])
+    semantic_fidelity_metric = Histogram('ares_semantic_fidelity', 'Semantic fidelity score', ['intent'])
+except Exception:
+    _PROMETHEUS_AVAILABLE = False
+
 
 class OptimizationStatus(str, Enum):
     """Execution status of prompt optimization."""
@@ -325,6 +336,15 @@ class UserPromptOptimizer:
             reasoning = f"Semantic fidelity ({fidelity_score:.2f}) fell below target ({target_fidelity:.2f})."
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+        if _PROMETHEUS_AVAILABLE:
+            try:
+                optimization_requests_total.labels(intent=intent.value, status=status.value).inc()
+                optimization_latency_seconds.observe(elapsed_ms / 1000.0)
+                token_savings_metric.labels(intent=intent.value).observe(token_savings_pct)
+                semantic_fidelity_metric.labels(intent=intent.value).observe(fidelity_score)
+            except Exception:
+                pass
 
         return OptimizedPromptResult(
             status=status,

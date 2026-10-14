@@ -94,7 +94,13 @@ def partition_stratified(
     return train_set, val_set, test_set
 
 
-def build_sft_splits(input_path: Path = INPUT_PAIRS_PATH):
+def build_sft_splits(
+    input_path: Path = INPUT_PAIRS_PATH,
+    output_dir: Path = INTENT_DATA_DIR,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
+):
     """
     Reads pairs, formats into chat templates, and saves train/val/test splits.
     """
@@ -110,7 +116,16 @@ def build_sft_splits(input_path: Path = INPUT_PAIRS_PATH):
     logger.info("Loaded %d raw optimization pairs from %s", len(raw_pairs), input_path)
 
     chat_records = [format_chat_record(p) for p in raw_pairs]
-    train_records, val_records, test_records = partition_stratified(chat_records)
+    train_records, val_records, test_records = partition_stratified(
+        chat_records,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+    )
+
+    train_path = output_dir / "sft_optimizer_train.jsonl"
+    val_path = output_dir / "sft_optimizer_val.jsonl"
+    test_path = output_dir / "sft_optimizer_test.jsonl"
 
     def write_jsonl(path: Path, data: List[Dict[str, Any]]):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,23 +134,33 @@ def build_sft_splits(input_path: Path = INPUT_PAIRS_PATH):
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
         logger.info("Saved %d records to %s", len(data), path)
 
-    write_jsonl(TRAIN_SPLIT_PATH, train_records)
-    write_jsonl(VAL_SPLIT_PATH, val_records)
-    write_jsonl(TEST_SPLIT_PATH, test_records)
+    write_jsonl(train_path, train_records)
+    write_jsonl(val_path, val_records)
+    write_jsonl(test_path, test_records)
 
     print("\n" + "=" * 80)
     print(" SFT DATASET SPLIT PARTITION SUMMARY")
     print("=" * 80)
     print(f"Total Formatted SFT Records: {len(chat_records)}")
-    print(f"  - Training Split:   {len(train_records)} records ({TRAIN_SPLIT_PATH.name})")
-    print(f"  - Validation Split: {len(val_records)} records ({VAL_SPLIT_PATH.name})")
-    print(f"  - Test Holdout:     {len(test_records)} records ({TEST_SPLIT_PATH.name})")
+    print(f"  - Training Split:   {len(train_records)} records ({train_path.name})")
+    print(f"  - Validation Split: {len(val_records)} records ({val_path.name})")
+    print(f"  - Test Holdout:     {len(test_records)} records ({test_path.name})")
     print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build SFT Dataset Splits for Llama 3.1 LoRA")
-    parser.add_argument("--input", type=str, default=str(INPUT_PAIRS_PATH), help="Path to input pairs JSONL")
+    parser.add_argument("--input", "--input-path", dest="input", type=str, default=str(INPUT_PAIRS_PATH), help="Path to input pairs JSONL")
+    parser.add_argument("--output-dir", type=str, default=str(INTENT_DATA_DIR), help="Output directory for SFT splits")
+    parser.add_argument("--train-ratio", type=float, default=0.80, help="Train split ratio")
+    parser.add_argument("--val-ratio", type=float, default=0.10, help="Validation split ratio")
+    parser.add_argument("--test-ratio", type=float, default=0.10, help="Test split ratio")
     args = parser.parse_args()
 
-    build_sft_splits(input_path=Path(args.input))
+    build_sft_splits(
+        input_path=Path(args.input),
+        output_dir=Path(args.output_dir),
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+    )

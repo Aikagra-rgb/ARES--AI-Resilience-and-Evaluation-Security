@@ -234,6 +234,7 @@ async def process_single_candidate(
 
 
 async def generate_all_targets(
+    dataset_path: Path = RAW_DATASET_PATH,
     samples_per_class: int = 300,
     concurrency: int = 3,
     output_path: Path = OUTPUT_PAIRS_PATH,
@@ -244,10 +245,11 @@ async def generate_all_targets(
     """
     t0 = time.perf_counter()
     logger.info("=== ARES Phase 0: Target Generation & Quality Filtering ===")
-    logger.info("Target: %d samples per class (%d total pairs)", samples_per_class, samples_per_class * 5)
+    logger.info("Source Dataset: %s", dataset_path)
+    logger.info("Target: %d samples per class", samples_per_class)
     logger.info("Output file: %s (Mode: %s)", output_path, "FAST CANONICAL" if fast else "PIPELINE RAG")
 
-    stratified_candidates = load_stratified_candidates(RAW_DATASET_PATH, samples_per_class)
+    stratified_candidates = load_stratified_candidates(dataset_path, samples_per_class)
     all_candidates: List[Dict[str, Any]] = []
     for items in stratified_candidates.values():
         all_candidates.extend(items)
@@ -360,23 +362,33 @@ def print_dataset_summary(results: List[Dict[str, Any]]):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate ARES SFT Prompt Optimization Pairs")
-    parser.add_argument("--samples", type=int, default=300, help="Samples per class (default: 300 -> 1,500 total)")
-    parser.add_argument("--concurrency", type=int, default=3, help="Async concurrency limit (default: 3)")
+    parser.add_argument("--dataset-path", type=str, default=str(RAW_DATASET_PATH), help="Source dataset path")
+    parser.add_argument("--output-path", type=str, default=str(OUTPUT_PAIRS_PATH), help="Output pairs JSONL path")
+    parser.add_argument("--samples", type=int, default=300, help="Total samples or samples per class")
+    parser.add_argument("--concurrency", type=int, default=4, help="Async concurrency limit (default: 4)")
     parser.add_argument("--fast", action="store_true", help="Generate ground truth pairs directly without slow remote RAG calls")
     parser.add_argument("--verify", action="store_true", help="Print summary of existing output file")
     args = parser.parse_args()
 
+    out_p = Path(args.output_path)
+    src_p = Path(args.dataset_path)
+
+    # Determine samples per class: if samples > 1000, treat as total samples across 5 classes
+    samples_per_class = args.samples // 5 if args.samples > 1000 else args.samples
+
     if args.verify:
-        if not OUTPUT_PAIRS_PATH.exists():
-            print(f"Error: {OUTPUT_PAIRS_PATH} does not exist.")
+        if not out_p.exists():
+            print(f"Error: {out_p} does not exist.")
             sys.exit(1)
-        records = [json.loads(line) for line in open(OUTPUT_PAIRS_PATH, encoding="utf-8") if line.strip()]
+        records = [json.loads(line) for line in open(out_p, encoding="utf-8") if line.strip()]
         print_dataset_summary(records)
     else:
         asyncio.run(
             generate_all_targets(
-                samples_per_class=args.samples,
+                dataset_path=src_p,
+                samples_per_class=samples_per_class,
                 concurrency=args.concurrency,
+                output_path=out_p,
                 fast=args.fast,
             )
         )

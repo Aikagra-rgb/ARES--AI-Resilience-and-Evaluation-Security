@@ -47,6 +47,7 @@ venv/
 *.onnx
 checkpoint-*/
 backend/ares/training/artifacts/ares_prompt_optimizer_lora/
+backend/ares/training/artifacts/ares_prompt_optimizer_lora_full/
 
 # OS
 .DS_Store
@@ -73,6 +74,8 @@ qdrant_data/
 !**/tsconfig.json
 !**/pyproject.toml
 !backend/ares/training/artifacts/evaluation_benchmark_results.json
+!backend/ares/training/artifacts/evaluation_benchmark_results_full.json
+!backend/ares/training/model_registry.json
 
 # Docker
 docker-compose.override.yml

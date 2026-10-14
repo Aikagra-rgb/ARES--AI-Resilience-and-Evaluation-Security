@@ -96,8 +96,9 @@ def convert_lora_to_gguf(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert PEFT LoRA safetensors to GGUF")
-    parser.add_argument("--adapter-dir", type=str, required=True, help="Directory containing adapter_model.safetensors")
-    parser.add_argument("--output", type=str, required=True, help="Target GGUF file path")
-    args = parser.parse_args()
+    parser.add_argument("--adapter-dir", "--adapter-path", dest="adapter_dir", type=str, required=True, help="Directory containing adapter_model.safetensors")
+    parser.add_argument("--output", "--output-path", dest="output", type=str, required=True, help="Target GGUF file path")
+    parser.add_argument("--base-model", type=str, default=None, help="Optional base model path")
+    args, _ = parser.parse_known_args()
 
     convert_lora_to_gguf(Path(args.adapter_dir), Path(args.output))

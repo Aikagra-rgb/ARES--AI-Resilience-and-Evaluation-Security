@@ -174,19 +174,36 @@ def train_lora_adapter(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ARES Real QLoRA Prompt Optimizer Trainer")
-    parser.add_argument("--model", type=str, default="unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit", help="Base model identifier")
+    parser.add_argument("--model", "--base-model", dest="model", type=str, default="unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit", help="Base model identifier")
+    parser.add_argument("--dataset-path", "--train-data", dest="dataset_path", type=str, default=str(TRAIN_DATA_PATH), help="Train dataset path")
+    parser.add_argument("--val-dataset-path", "--val-data", dest="val_dataset_path", type=str, default=str(VAL_DATA_PATH), help="Validation dataset path")
+    parser.add_argument("--output-dir", type=str, default=str(ARTIFACTS_DIR), help="Output directory for weights")
     parser.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--max-steps", type=int, default=-1, help="Max training steps (-1 for full epochs)")
     parser.add_argument("--batch-size", type=int, default=1, help="Per-device batch size")
-    parser.add_argument("--grad-accum", type=int, default=8, help="Gradient accumulation steps")
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
-    args = parser.parse_args()
+    parser.add_argument("--gradient-accumulation", "--grad-accum", dest="grad_accum", type=int, default=8, help="Gradient accumulation steps")
+    parser.add_argument("--learning-rate", "--lr", dest="lr", type=float, default=2e-4, help="Learning rate")
+    parser.add_argument("--warmup-ratio", type=float, default=0.05, help="Warmup ratio")
+    parser.add_argument("--lr-scheduler", type=str, default="cosine", help="LR scheduler type")
+    parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
+    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--max-seq-length", type=int, default=512, help="Max sequence length")
+    parser.add_argument("--gradient-checkpointing", action="store_true", default=True, help="Enable gradient checkpointing")
+    parser.add_argument("--optim", type=str, default="paged_adamw_8bit", help="Optimizer")
+    args, unknown = parser.parse_known_args()
 
     train_lora_adapter(
         base_model_name=args.model,
+        train_data_path=Path(args.dataset_path),
+        val_data_path=Path(args.val_dataset_path),
+        output_dir=Path(args.output_dir),
         num_epochs=args.epochs,
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        max_seq_length=args.max_seq_length,
     )
