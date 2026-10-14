@@ -22,10 +22,10 @@ public sealed class FastApiAresApiClient : IAresApiClient
     private readonly HttpClient _http;
     private readonly MockAresApiClient _learningFallback;
     private readonly ConcurrentDictionary<string, ArenaTestConfiguration> _submittedConfigurations = new();
-    private readonly string _signingKey;
+    private readonly string? _signingKey;
     private readonly string _keyId;
 
-    public FastApiAresApiClient(HttpClient http, MockAresApiClient learningFallback, string signingKey = null, string keyId = "ares-web")
+    public FastApiAresApiClient(HttpClient http, MockAresApiClient learningFallback, string? signingKey = null, string keyId = "ares-web")
     {
         _http = http;
         _learningFallback = learningFallback;
@@ -43,8 +43,8 @@ public sealed class FastApiAresApiClient : IAresApiClient
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
         var nonce = Guid.NewGuid().ToString("N");
         var method = request.Method.Method;
-        var path = request.RequestUri.AbsolutePath;
-        var query = request.RequestUri.Query.TrimStart('?');
+        var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+        var query = request.RequestUri?.Query.TrimStart('?') ?? string.Empty;
         
         // Create canonical request
         var canonicalParts = new List<string>
@@ -79,7 +79,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private HttpRequestMessage CreateSignedRequest(HttpMethod method, string url, object body = null)
+    private HttpRequestMessage CreateSignedRequest(HttpMethod method, string url, object? body = null)
     {
         var request = new HttpRequestMessage(method, url);
         
@@ -103,13 +103,13 @@ public sealed class FastApiAresApiClient : IAresApiClient
         return request;
     }
 
-    private async Task<HttpResponseMessage> SendSignedAsync(HttpMethod method, string url, object body = null, CancellationToken cancellationToken = default)
+    private async Task<HttpResponseMessage> SendSignedAsync(HttpMethod method, string url, object? body = null, CancellationToken cancellationToken = default)
     {
         var request = CreateSignedRequest(method, url, body);
         return await _http.SendAsync(request, cancellationToken);
     }
 
-    private async Task<T> SendSignedAsync<T>(HttpMethod method, string url, object body = null, CancellationToken cancellationToken = default)
+    private async Task<T> SendSignedAsync<T>(HttpMethod method, string url, object? body = null, CancellationToken cancellationToken = default)
     {
         using var response = await SendSignedAsync(method, url, body, cancellationToken);
         if (response.IsSuccessStatusCode)
