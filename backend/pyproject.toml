@@ -38,6 +38,7 @@ line-length = 110
 target-version = "py311"
 
 [tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
 # FastAPI declares dependencies through function defaults; datetime.UTC needs Python 3.11+ semantics.
 ignore = ["B008", "UP017"]
 
