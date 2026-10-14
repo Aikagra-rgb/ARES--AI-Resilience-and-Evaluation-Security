@@ -328,18 +328,36 @@ def test_dashboard_dynamic_trends_and_incidents() -> None:
     import uuid
     from datetime import datetime, timezone
     from app.database import SessionLocal
-    from app.models import TestRun, Finding, Severity
+    from app.models import Finding, Organization, Project, Severity, TestRun, User
 
     # Seed one test run and finding into DB to verify dynamic extraction
     db = SessionLocal()
     test_run_id = f"test-trnd-{uuid.uuid4().hex[:8]}"
     finding_id = f"fnd-trnd-{uuid.uuid4().hex[:8]}"
     try:
+        org = db.query(Organization).filter_by(name="Local development").first()
+        if not org:
+            org = Organization(name="Local development")
+            db.add(org)
+            db.flush()
+
+        user = db.query(User).filter_by(email="developer@local").first()
+        if not user:
+            user = User(organization_id=org.id, email="developer@local", display_name="Developer")
+            db.add(user)
+            db.flush()
+
+        proj = db.query(Project).filter_by(name="Default project").first()
+        if not proj:
+            proj = Project(organization_id=org.id, created_by_user_id=user.id, name="Default project")
+            db.add(proj)
+            db.flush()
+
         tr = TestRun(
             id=test_run_id,
-            organization_id="org-test",
-            project_id="proj-test",
-            requested_by_user_id="user-test",
+            organization_id=org.id,
+            project_id=proj.id,
+            requested_by_user_id=user.id,
             configuration={"target_application": "Dynamic Test API"},
             prompt_fingerprint="fprint-123",
             correlation_id="corr-dyn-999",

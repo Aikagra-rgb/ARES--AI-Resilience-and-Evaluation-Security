@@ -74,17 +74,18 @@ def get_current_user(
         user = User(organization_id=organization.id, email=email, display_name=email.split("@")[0])
         db.add(user)
         db.flush()
-        default_project = db.scalar(
-            select(Project).where(Project.organization_id == organization.id, Project.name == "Default project")
-        )
-        if default_project is None:
-            db.add(
-                Project(
-                    organization_id=organization.id,
-                    created_by_user_id=user.id,
-                    name="Default project",
-                    description="Local development project",
-                )
+
+    default_project = db.scalar(
+        select(Project).where(Project.organization_id == organization.id, Project.name == "Default project")
+    )
+    if default_project is None:
+        db.add(
+            Project(
+                organization_id=organization.id,
+                created_by_user_id=user.id,
+                name="Default project",
+                description="Local development project",
             )
+        )
     db.commit()
     return CurrentUser(id=user.id, organization_id=organization.id, email=user.email)
