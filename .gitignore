@@ -72,6 +72,7 @@ qdrant_data/
 !**/package.json
 !**/tsconfig.json
 !**/pyproject.toml
+!backend/ares/training/artifacts/evaluation_benchmark_results.json
 
 # Docker
 docker-compose.override.yml
