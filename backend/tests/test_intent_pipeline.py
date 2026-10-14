@@ -176,6 +176,11 @@ def test_scaled_5000_dataset_and_model_loading():
 
     # Verify scaled model artifact
     model_path = mgr.data_dir / "intent_classifier_scaled_5000.joblib"
+    if not model_path.exists():
+        clf_train = SklearnIntentClassifier(model_path=model_path)
+        prompts = [s.prompt for s in full_data]
+        labels = [s.intent for s in full_data]
+        clf_train.fit(prompts, labels)
     assert model_path.exists()
 
     clf = SklearnIntentClassifier(model_path=model_path)

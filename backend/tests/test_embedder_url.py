@@ -19,11 +19,12 @@ class TestEmbedderURL:
     def settings(self) -> Settings:
         """Create test settings with a fake API key."""
         return Settings(
-            DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/ares_test",
+            DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test",
             GEMINI_API_KEY="test-api-key-12345",
             GEMINI_EMBEDDING_MODEL="models/gemini-embedding-001",
             QDRANT_VECTOR_SIZE=768,
             EMBEDDING_ALLOW_HASH_FALLBACK=False,
+            PREFER_LOCAL_EMBEDDINGS=False,
         )
 
     @pytest.fixture
