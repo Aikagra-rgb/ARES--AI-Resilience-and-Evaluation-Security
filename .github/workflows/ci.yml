@@ -72,12 +72,18 @@ jobs:
         run: |
           set -o pipefail
           pytest -m "not integration" -v --durations=10 --tb=short | tee test_run.log || {
-            echo "## Pytest Failures" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 60 test_run.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "^(FAILED|ERROR) " test_run.log | while IFS= read -r line; do
+              echo "::error title=Pytest Failure::$line"
+            done
             exit 1
           }
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-py${{ matrix.python-version }}
+          path: backend/test_run.log
 
   frontend-tests:
     name: Frontend Tests (.NET 8.0)
