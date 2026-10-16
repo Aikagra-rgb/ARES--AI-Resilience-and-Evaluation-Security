@@ -236,7 +236,8 @@ class UserPromptOptimizer:
             fallback_model = self.settings.hardener_model or "llama3.1:8b"
 
             # 1. First priority: Dedicated Native PEFT LoRA Inference Server (Direct GPU Weights)
-            lora_url = getattr(self.settings, "lora_server_url", "http://localhost:11435/v1")
+            raw_lora_url = getattr(self.settings, "lora_server_url", "http://localhost:11435/v1") or "http://localhost:11435/v1"
+            lora_url = raw_lora_url.strip().rstrip("/")
             use_lora = getattr(self.settings, "use_lora_server", True)
             response = None
 

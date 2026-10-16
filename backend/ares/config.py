@@ -220,9 +220,10 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _normalize_lora_server_url(self) -> "Settings":
         if self.lora_server_url:
-            cleaned = self.lora_server_url.rstrip("/")
+            cleaned = self.lora_server_url.strip().rstrip("/")
             if not cleaned.endswith("/v1"):
-                object.__setattr__(self, "lora_server_url", f"{cleaned}/v1")
+                cleaned = f"{cleaned}/v1"
+            object.__setattr__(self, "lora_server_url", cleaned)
         return self
 
     @model_validator(mode="after")

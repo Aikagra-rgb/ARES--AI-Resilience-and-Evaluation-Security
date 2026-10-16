@@ -6,6 +6,15 @@ from typing import Any, Dict, Optional
 from ares_sdk.config import AresConfig
 from ares_sdk.exceptions import AresAPIError, AresAuthenticationError, AresRateLimitError
 
+class OptimizationResult(dict):
+    """Dictionary supporting attribute access for response fields."""
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'OptimizationResult' object has no attribute '{name}'")
+
+
 class AresClient:
     """Async Client for interfacing with the ARES Prompt Compiler & Resilience Engine."""
 
@@ -21,7 +30,7 @@ class AresClient:
         prompt: str,
         domain: Optional[str] = None,
         target_fidelity: float = 0.85,
-    ) -> Dict[str, Any]:
+    ) -> OptimizationResult:
         """
         Optimize and compress a user prompt via the ARES API.
         """
@@ -42,7 +51,7 @@ class AresClient:
             elif response.status_code != 200:
                 raise AresAPIError(f"Optimization failed ({response.status_code}): {response.text}")
 
-            return response.json()
+            return OptimizationResult(response.json())
         except httpx.RequestError as exc:
             raise AresAPIError(f"Network error connecting to ARES API: {exc}") from exc
 

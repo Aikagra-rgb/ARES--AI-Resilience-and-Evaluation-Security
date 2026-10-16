@@ -56,7 +56,7 @@ async def evaluate_holdout(
     logger.info("Evaluating model: %s", model_name)
 
     if adapter_server:
-        server_url = adapter_server.rstrip("/")
+        server_url = adapter_server.strip().rstrip("/")
         if not server_url.endswith("/v1"):
             server_url = f"{server_url}/v1"
         custom_settings = settings.model_copy(update={

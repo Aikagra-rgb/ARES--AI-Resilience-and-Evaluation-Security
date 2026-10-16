@@ -140,3 +140,107 @@ def test_api_optimize_endpoint_and_intents_catalog(user_optimizer: UserPromptOpt
         assert mal_body["optimized_prompt"] is None
     finally:
         app.dependency_overrides.pop(get_prompt_optimizer, None)
+
+
+def test_settings_lora_server_url_normalization_edge_cases():
+    """Verify Settings properly normalizes LoRA server URLs across all edge cases."""
+    from ares.config import Settings
+
+    cases = [
+        ("http://lora-inference:11435", "http://lora-inference:11435/v1"),
+        ("http://lora-inference:11435/", "http://lora-inference:11435/v1"),
+        ("http://lora-inference:11435/v1", "http://lora-inference:11435/v1"),
+        ("http://lora-inference:11435/v1/", "http://lora-inference:11435/v1"),
+        ("http://lora-inference:11435/v1///", "http://lora-inference:11435/v1"),
+        ("  http://lora-inference:11435/v1/  ", "http://lora-inference:11435/v1"),
+        ("  http://lora-inference:11435  ", "http://lora-inference:11435/v1"),
+    ]
+    for input_url, expected in cases:
+        s = Settings(ARES_LORA_SERVER_URL=input_url)
+        assert s.lora_server_url == expected, f"Failed on input {input_url!r}: got {s.lora_server_url!r}, expected {expected!r}"
+
+
+@pytest.mark.asyncio
+async def test_optimizer_fallback_when_lora_server_offline():
+    """Verify that when LoRA inference server is unreachable, optimizer falls back to LLM client."""
+    from ares.config import Settings
+
+    s = Settings(
+        ARES_LORA_SERVER_URL="http://127.0.0.1:9999/v1",
+        ARES_USE_LORA_SERVER=True,
+    )
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text="def reverse_string(s: str) -> str:\n    return s[::-1]",
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=15.0,
+            prompt_tokens=30,
+            completion_tokens=15,
+            total_tokens=45,
+        )
+    )
+    mock_emb = MagicMock(spec=GeminiEmbedder)
+    mock_emb.embed_text = AsyncMock(return_value=[0.1] * 768)
+
+    opt = UserPromptOptimizer(settings=s, llm_client=mock_llm, embedder=mock_emb)
+    res = await opt.optimize_prompt(
+        "Could you please write a quick python function to reverse a string without using built in functions?",
+        domain="software",
+    )
+
+    assert res.status == OptimizationStatus.SUCCESS
+    assert res.optimized_prompt is not None
+    assert mock_llm.complete.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_optimizer_bypasses_lora_when_disabled():
+    """Verify that setting use_lora_server=False bypasses LoRA server entirely."""
+    from ares.config import Settings
+
+    s = Settings(
+        ARES_LORA_SERVER_URL="http://127.0.0.1:9999/v1",
+        ARES_USE_LORA_SERVER=False,
+    )
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text="def reverse_string(s: str) -> str:\n    return s[::-1]",
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=15.0,
+            prompt_tokens=30,
+            completion_tokens=15,
+            total_tokens=45,
+        )
+    )
+    mock_emb = MagicMock(spec=GeminiEmbedder)
+    mock_emb.embed_text = AsyncMock(return_value=[0.1] * 768)
+
+    opt = UserPromptOptimizer(settings=s, llm_client=mock_llm, embedder=mock_emb)
+    res = await opt.optimize_prompt("Write a reverse string function in python", domain="software")
+
+    assert res.status == OptimizationStatus.SUCCESS
+    assert mock_llm.complete.call_count == 1
+
+
+def test_sdk_ares_client_optimization_result():
+    """Verify OptimizationResult supports both dictionary indexing and attribute access."""
+    from ares_sdk.client import OptimizationResult
+
+    raw = {
+        "status": "success",
+        "optimized_prompt": "def reverse_string(s): return s[::-1]",
+        "token_savings_pct": 0.42,
+    }
+    res = OptimizationResult(raw)
+
+    assert res["status"] == "success"
+    assert res.status == "success"
+    assert res["optimized_prompt"] == "def reverse_string(s): return s[::-1]"
+    assert res.optimized_prompt == "def reverse_string(s): return s[::-1]"
+    assert res.token_savings_pct == 0.42
+    assert isinstance(res, dict)
+
