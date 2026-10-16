@@ -35,6 +35,7 @@ async def evaluate_holdout(
     model_name: str = "ares-optimizer:8b",
     limit: int | None = None,
     output_path: Path | None = None,
+    adapter_server: str | None = None,
 ):
     """
     Run evaluation across holdout test records.
@@ -54,7 +55,17 @@ async def evaluate_holdout(
     logger.info("Loaded %d holdout test samples from %s", len(records), test_path)
     logger.info("Evaluating model: %s", model_name)
 
-    optimizer = UserPromptOptimizer(settings=settings)
+    if adapter_server:
+        server_url = adapter_server.rstrip("/")
+        if not server_url.endswith("/v1"):
+            server_url = f"{server_url}/v1"
+        custom_settings = settings.model_copy(update={
+            "lora_server_url": server_url,
+            "use_lora_server": True,
+        })
+        optimizer = UserPromptOptimizer(settings=custom_settings)
+    else:
+        optimizer = UserPromptOptimizer(settings=settings)
 
     results: List[Dict[str, Any]] = []
     by_intent: Dict[str, List[Dict[str, Any]]] = {}
@@ -199,5 +210,6 @@ if __name__ == "__main__":
             model_name=args.model,
             limit=args.limit,
             output_path=Path(args.output) if args.output else None,
+            adapter_server=args.adapter_server,
         )
     )

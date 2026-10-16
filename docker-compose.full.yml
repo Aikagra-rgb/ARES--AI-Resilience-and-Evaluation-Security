@@ -6,10 +6,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://ares:password@postgres:5432/ares
+      - DATABASE_URL=postgresql+psycopg://ares:password@postgres:5432/ares
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379
-      - ARES_LORA_SERVER_URL=http://lora-inference:11435
+      - ARES_LORA_SERVER_URL=http://lora-inference:11435/v1
     depends_on:
       - postgres
       - qdrant
@@ -19,7 +19,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: python backend/ares/training/serve_lora.py --port 11435 --host 0.0.0.0
+    command: python -m ares.training.serve_lora --port 11435 --host 0.0.0.0
     ports:
       - "11435:11435"
     deploy:

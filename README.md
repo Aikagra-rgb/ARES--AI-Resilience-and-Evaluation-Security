@@ -24,8 +24,20 @@ ARES is an enterprise-grade AI security gateway, resilience testing engine, and 
 ### 2. Enterprise Prompt Optimizer & Intent Classifier
 - **5-Class Intent Taxonomy**: Sub-millisecond TF-IDF + Logistic Regression classification across `coding_technical`, `creative_writing`, `analytical_qa`, `system_directive`, and `data_extraction_json`.
 - **Few-Shot Exemplar Store**: Dynamic Qdrant exemplar search for in-context demonstrations tailored to classified user intent.
-- **4-Bit QLoRA Fine-Tuned Model**: Native fine-tuned adapter on Llama 3.1 8B Instruct delivering ~44.4% token compression while maintaining 0.84+ semantic fidelity.
+- **4-Bit QLoRA Fine-Tuned Model**: Native fine-tuned adapter on Llama 3.1 8B Instruct delivering 42.8% net token compression while maintaining 0.855+ semantic fidelity across holdout evaluation benchmarks.
 - **Dual-Routing Fallback**: Primary routing through local LoRA inference server (`localhost:11435`), with seamless automatic fallback to Ollama (`llama3.1:8b-instruct`) and cloud LLMs (Gemini, Groq, NVIDIA).
+
+#### Prompt Optimizer Holdout Benchmark (N=100 samples)
+
+| Intent Class | Evaluation Samples | Avg Original Tokens | Avg Optimized Tokens | Token Savings (%) | Mean Semantic Fidelity |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `analytical_qa` | 22 | 56.3 | 23.0 | 58.1% | 0.873 |
+| `coding_technical` | 22 | 47.5 | 31.1 | 39.0% | 0.843 |
+| `creative_writing` | 17 | 49.3 | 25.5 | 45.0% | 0.915 |
+| `data_extraction_json` | 19 | 38.4 | 25.6 | 30.4% | 0.818 |
+| `system_directive` | 20 | 56.0 | 36.7 | 30.9% | 0.833 |
+| **Overall Net** | **100** | **49.7** | **28.4** | **42.8%** | **0.855** |
+
 
 ### 3. Red Team Arena & Automated Evaluation
 - Automated adversarial prompt synthesis, payload mutation, and jailbreak simulation.

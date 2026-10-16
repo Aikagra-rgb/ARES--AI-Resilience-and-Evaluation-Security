@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     prefer_local_embeddings: bool = Field(default=True, alias="PREFER_LOCAL_EMBEDDINGS")
     
     # -------------------------------------------------------------------------
+    # Native LoRA Inference Server
+    # -------------------------------------------------------------------------
+    lora_server_url: str = Field(default="http://localhost:11435/v1", alias="ARES_LORA_SERVER_URL")
+    use_lora_server: bool = Field(default=True, alias="ARES_USE_LORA_SERVER")
+    
+    # -------------------------------------------------------------------------
     # Vector DB (Qdrant)
     # -------------------------------------------------------------------------
     qdrant_url: str = Field(default="", alias="QDRANT_URL")
@@ -209,6 +215,14 @@ class Settings(BaseSettings):
                 f"got: {self.database_url}"
             )
         
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_lora_server_url(self) -> "Settings":
+        if self.lora_server_url:
+            cleaned = self.lora_server_url.rstrip("/")
+            if not cleaned.endswith("/v1"):
+                object.__setattr__(self, "lora_server_url", f"{cleaned}/v1")
         return self
 
     @model_validator(mode="after")
