@@ -238,6 +238,8 @@ class UserPromptOptimizer:
             # 1. First priority: Dedicated Native PEFT LoRA Inference Server (Direct GPU Weights)
             raw_lora_url = getattr(self.settings, "lora_server_url", "http://localhost:11435/v1") or "http://localhost:11435/v1"
             lora_url = raw_lora_url.strip().rstrip("/")
+            if not lora_url.endswith("/v1"):
+                lora_url = f"{lora_url}/v1"
             use_lora = getattr(self.settings, "use_lora_server", True)
             response = None
 

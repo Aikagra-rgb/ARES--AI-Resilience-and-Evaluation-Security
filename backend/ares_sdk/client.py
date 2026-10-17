@@ -18,12 +18,23 @@ class OptimizationResult(dict):
 class AresClient:
     """Async Client for interfacing with the ARES Prompt Compiler & Resilience Engine."""
 
-    def __init__(self, api_key: str, base_url: str = "http://localhost:8000"):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "http://localhost:8000",
+        *,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+        http_client: Optional[httpx.AsyncClient] = None,
+    ):
         self.config = AresConfig(api_key=api_key, base_url=base_url)
-        self.client = httpx.AsyncClient(
-            headers={"X-Ares-Api-Key": api_key, "Content-Type": "application/json"},
-            timeout=self.config.timeout,
-        )
+        if http_client is not None:
+            self.client = http_client
+        else:
+            self.client = httpx.AsyncClient(
+                headers={"X-Ares-Api-Key": api_key, "Content-Type": "application/json"},
+                timeout=self.config.timeout,
+                transport=transport,
+            )
 
     async def optimize_prompt(
         self,

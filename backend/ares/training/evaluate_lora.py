@@ -201,7 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="ares-optimizer:8b", help="Model to evaluate")
     parser.add_argument("--limit", type=int, default=None, help="Optional limit on samples to evaluate")
     parser.add_argument("--output", "--output-path", dest="output", type=str, default=None, help="Output JSON path")
-    parser.add_argument("--adapter-server", type=str, default=None, help="LoRA server address")
+    parser.add_argument("--adapter-server", "--adapter_server", dest="adapter_server", type=str, default=None, help="LoRA server address")
     args, _ = parser.parse_known_args()
 
     asyncio.run(

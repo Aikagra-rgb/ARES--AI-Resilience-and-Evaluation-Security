@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,6 +37,7 @@ app = FastAPI(title="ARES Fine-Tuned LoRA Optimizer Engine", version="1.0.0")
 
 model = None
 tokenizer = None
+_model_lock = threading.Lock()
 
 
 class ChatMessage(BaseModel):
@@ -60,6 +62,7 @@ def healthz():
 
 
 @app.post("/v1/chat/completions")
+@app.post("/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
     global model, tokenizer
     if model is None or tokenizer is None:
@@ -77,15 +80,16 @@ def chat_completions(req: ChatCompletionRequest):
     input_ids = inputs["input_ids"].to(model.device)
     attention_mask = inputs["attention_mask"].to(model.device)
 
-    with torch.no_grad():
-        output_ids = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=req.max_tokens or 512,
-            temperature=req.temperature or 0.2,
-            do_sample=(req.temperature or 0.2) > 0.05,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+    with _model_lock:
+        with torch.no_grad():
+            output_ids = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=req.max_tokens or 512,
+                temperature=req.temperature or 0.2,
+                do_sample=(req.temperature or 0.2) > 0.05,
+                pad_token_id=tokenizer.eos_token_id,
+            )
 
     # Slice off prompt tokens to keep only generated response
     gen_tokens = output_ids[0][input_ids.shape[1]:]

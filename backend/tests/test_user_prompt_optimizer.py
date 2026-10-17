@@ -244,3 +244,33 @@ def test_sdk_ares_client_optimization_result():
     assert res.token_savings_pct == 0.42
     assert isinstance(res, dict)
 
+
+@pytest.mark.asyncio
+async def test_ares_client_custom_transport():
+    """Verify AresClient works with custom transport against FastAPI app."""
+    import httpx
+    from app.main import app
+    from ares_sdk.client import AresClient
+
+    transport = httpx.ASGITransport(app=app)
+    async with AresClient(
+        api_key="ares-dev-secret-key-42",
+        base_url="http://testserver",
+        transport=transport,
+    ) as client:
+        health = await client.health()
+        assert "status" in health
+
+
+def test_serve_lora_routes_and_thread_lock():
+    """Verify serve_lora exposes both /v1/chat/completions and /chat/completions and has model lock."""
+    from ares.training.serve_lora import app as lora_app, _model_lock
+    import threading
+
+    assert isinstance(_model_lock, type(threading.Lock()))
+    route_paths = [r.path for r in lora_app.routes]
+    assert "/v1/chat/completions" in route_paths
+    assert "/chat/completions" in route_paths
+    assert "/healthz" in route_paths
+
+
