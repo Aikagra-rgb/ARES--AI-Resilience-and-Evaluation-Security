@@ -264,6 +264,9 @@ async def test_ares_client_custom_transport():
 
 def test_serve_lora_routes_and_thread_lock():
     """Verify serve_lora exposes both /v1/chat/completions and /chat/completions and has model lock."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
     from ares.training.serve_lora import app as lora_app, _model_lock
     import threading
 
