@@ -38,7 +38,7 @@ class OptimizePromptRequest(BaseModel):
     """Request payload to optimize a user prompt."""
     prompt: str = Field(..., min_length=1, max_length=50000, description="The raw prompt text to optimize")
     domain: Optional[str] = Field(default=None, description="Optional domain hint (e.g. software, fintech, healthcare)")
-    target_fidelity: float = Field(default=0.85, ge=0.5, le=1.0, description="Minimum acceptable semantic similarity threshold")
+    target_fidelity: Optional[float] = Field(default=None, ge=0.5, le=1.0, description="Minimum acceptable semantic similarity threshold (defaults to class-aware threshold)")
     allow_harmful: bool = Field(default=False, description="Whether to bypass security gate (for red-teaming research)")
 
 

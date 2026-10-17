@@ -88,7 +88,7 @@ async def evaluate_holdout(
         res = await optimizer.optimize_prompt(
             user_prompt=raw_prompt,
             domain=domain,
-            target_fidelity=0.85,
+            target_fidelity=None,
             allow_harmful=True,
         )
 

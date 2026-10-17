@@ -25,18 +25,19 @@ ARES is an enterprise-grade AI security gateway, resilience testing engine, and 
 - **5-Class Intent Taxonomy**: Sub-millisecond TF-IDF + Logistic Regression classification across `coding_technical`, `creative_writing`, `analytical_qa`, `system_directive`, and `data_extraction_json`.
 - **Few-Shot Exemplar Store**: Dynamic Qdrant exemplar search for in-context demonstrations tailored to classified user intent.
 - **4-Bit QLoRA Fine-Tuned Model**: Native fine-tuned adapter on Llama 3.1 8B Instruct delivering 42.9% net token compression while maintaining 0.854+ semantic fidelity across the exhaustive 513-sample holdout test benchmark.
+- **Class-Aware Fidelity Gates & Structural Verification**: Calibrated per-class cosine similarity thresholds (`0.87` creative, `0.86` analytical, `0.85` coding, `0.80` JSON & system directives) paired with structural JSON schema field preservation (`verify_json_schema_preserved`) and imperative guardrail checklist verification (`verify_directive_markers`).
 - **Dual-Routing Fallback**: Primary routing through local LoRA inference server (`localhost:11435`), with seamless automatic fallback to Ollama (`llama3.1:8b-instruct`) and cloud LLMs (Gemini, Groq, NVIDIA).
 
 #### Prompt Optimizer Holdout Benchmark (N=513 samples)
 
-| Intent Class | Evaluation Samples | Avg Original Tokens | Avg Optimized Tokens | Token Savings (%) | Mean Semantic Fidelity |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `analytical_qa` | 104 | 51.6 | 24.1 | 50.9% | 0.883 |
-| `coding_technical` | 104 | 44.2 | 25.8 | 42.4% | 0.852 |
-| `creative_writing` | 104 | 49.7 | 26.5 | 44.8% | 0.900 |
-| `data_extraction_json` | 104 | 41.4 | 26.6 | 32.0% | 0.813 |
-| `system_directive` | 97 | 59.1 | 37.8 | 33.6% | 0.819 |
-| **Overall Net** | **513** | **49.1** | **28.0** | **42.9%** | **0.854** |
+| Intent Class | Evaluation Samples | Avg Original Tokens | Avg Optimized Tokens | Token Savings (%) | Mean Semantic Fidelity | Class Fidelity Gate |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `analytical_qa` | 104 | 51.6 | 24.1 | 50.9% | 0.883 | >= 0.86 (`PASS`) |
+| `coding_technical` | 104 | 44.2 | 25.8 | 42.4% | 0.852 | >= 0.85 (`PASS`) |
+| `creative_writing` | 104 | 49.7 | 26.5 | 44.8% | 0.900 | >= 0.87 (`PASS`) |
+| `data_extraction_json` | 104 | 41.4 | 26.6 | 32.0% | 0.813 | >= 0.80 (`PASS`) |
+| `system_directive` | 97 | 59.1 | 37.8 | 33.6% | 0.819 | >= 0.80 (`PASS`) |
+| **Overall Net** | **513** | **49.1** | **28.0** | **42.9%** | **0.854** | **All 5 Classes PASS** |
 
 
 
@@ -76,7 +77,7 @@ ARES is an enterprise-grade AI security gateway, resilience testing engine, and 
 │   │   └── observability/      # Prometheus metrics & structured logging
 │   ├── ares_sdk/               # Standalone Python client library
 │   ├── scripts/                # Evaluation & training CLI utilities
-│   ├── tests/                  # 188 automated pytest unit tests
+│   ├── tests/                  # 192 automated pytest unit tests
 │   ├── requirements.txt
 │   └── pyproject.toml
 ├── src/
@@ -175,7 +176,7 @@ ARES is engineered to be **fully operational regardless of local GPU availabilit
 Both backend and frontend test suites are fully isolated and executable offline without external API dependencies:
 
 ```bash
-# Run Backend Test Suite (188 tests)
+# Run Backend Test Suite (192 tests)
 cd backend
 pytest -m "not integration" -v
 

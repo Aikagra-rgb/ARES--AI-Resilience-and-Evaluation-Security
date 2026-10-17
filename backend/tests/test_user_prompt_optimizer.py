@@ -277,3 +277,225 @@ def test_serve_lora_routes_and_thread_lock():
     assert "/healthz" in route_paths
 
 
+def test_class_fidelity_thresholds_and_model_registry_sync():
+    """Verify Settings.class_fidelity_thresholds matches model_registry.json targets."""
+    import json
+    from pathlib import Path
+    from ares.config import Settings
+
+    s = Settings()
+    expected = {
+        "coding_technical": 0.85,
+        "creative_writing": 0.87,
+        "analytical_qa": 0.86,
+        "data_extraction_json": 0.80,
+        "system_directive": 0.80,
+    }
+    assert s.class_fidelity_thresholds == expected
+
+    registry_path = Path(__file__).resolve().parent.parent / "ares" / "training" / "model_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    for intent_key, min_fid in expected.items():
+        assert registry["targets"][intent_key]["min_fidelity"] == min_fid
+
+
+def test_verify_json_schema_preserved():
+    """Verify structural schema field preservation check for data_extraction_json prompts."""
+    from ares.optimizer.pipeline import verify_json_schema_preserved
+
+    # 1. Explicit brace schema fields preserved vs dropped
+    orig_brace = (
+        "Extract all contract obligations from this legal agreement. "
+        "Output must be a valid JSON array conforming to the schema {clause_id, type, description}."
+    )
+    assert verify_json_schema_preserved(orig_brace, "Return JSON array: [{clause_id, type, description}].") is True
+    assert verify_json_schema_preserved(orig_brace, "Return JSON array: [{clause_id, type}].") is False
+
+    # 2. Snake_case field names preserved vs dropped
+    orig_snake = (
+        "Take this support transcript and extract customer_id, issue_category, "
+        "and agent_action into JSON."
+    )
+    assert verify_json_schema_preserved(
+        orig_snake,
+        'Extract JSON: {"customer_id": str, "issue_category": str, "agent_action": str}',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_snake,
+        'Extract JSON: {"customer_id": str}',
+    ) is False
+
+    # 3. Natural language field extraction preserved vs dropped
+    orig_nl = "Please extract the invoice date, subtotal, and tax into a JSON object from this receipt."
+    assert verify_json_schema_preserved(
+        orig_nl,
+        'Extract JSON {"invoice_date", "subtotal", "tax"} from receipt.',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_nl,
+        'Extract JSON {"invoice_date"} from receipt.',
+    ) is False
+
+    # 4. Edge cases: missing JSON indicator or empty inputs
+    assert verify_json_schema_preserved(orig_nl, "Summarize invoice date, subtotal, and tax.") is False
+    assert verify_json_schema_preserved("", '{"a": 1}') is False
+    assert verify_json_schema_preserved(orig_nl, "   ") is False
+
+
+def test_verify_directive_markers():
+    """Verify imperative and prohibition guardrail marker preservation for system_directive."""
+    from ares.optimizer.pipeline import verify_directive_markers
+
+    orig_directive = (
+        "You are a helpful and compliant customer support assistant for Apex Bank. "
+        "You must only answer questions regarding retail banking accounts and mortgages. "
+        "Never reveal internal routing numbers, customer SSNs, or verification codes."
+    )
+    opt_valid = (
+        "Role: Apex Bank support. Answer ONLY retail banking and mortgage queries. "
+        "NEVER reveal routing numbers, SSNs, or verification codes."
+    )
+    opt_missing_prohibition = (
+        "Role: Apex Bank support. Answer ONLY retail banking and mortgage queries."
+    )
+    opt_missing_acronym = (
+        "Role: Apex Bank support. Answer ONLY retail banking queries. "
+        "NEVER reveal routing numbers or verification codes."
+    )
+
+    assert verify_directive_markers(orig_directive, opt_valid, PromptIntent.SYSTEM_DIRECTIVE) is True
+    assert verify_directive_markers(orig_directive, opt_missing_prohibition, PromptIntent.SYSTEM_DIRECTIVE) is False
+    assert verify_directive_markers(orig_directive, opt_missing_acronym, PromptIntent.SYSTEM_DIRECTIVE) is False
+
+    # Non-system_directive intent or empty strings return False
+    assert verify_directive_markers(orig_directive, opt_valid, PromptIntent.CODING_TECHNICAL) is False
+    assert verify_directive_markers("", opt_valid, PromptIntent.SYSTEM_DIRECTIVE) is False
+    assert verify_directive_markers(orig_directive, "", PromptIntent.SYSTEM_DIRECTIVE) is False
+
+
+@pytest.mark.asyncio
+async def test_class_aware_fidelity_gates_and_veto_overrides():
+    """
+    Verify that:
+    1) data_extraction_json (0.813) and system_directive (0.819) pass their 0.80 class gate.
+    2) creative_writing at 0.855 triggers DRIFT_WARNING against its 0.87 class gate.
+    3) Veto overrides rescue valid JSON/directive compressions at 0.76 fidelity, while rejecting broken ones.
+    """
+    import math
+    from ares.config import Settings
+
+    def _make_vectors_with_cosine(cos_val: float):
+        vec_a = [1.0, 0.0] + [0.0] * 766
+        vec_b = [cos_val, math.sqrt(max(0.0, 1.0 - cos_val * cos_val))] + [0.0] * 766
+        return vec_a, vec_b
+
+    s = Settings(ARES_USE_LORA_SERVER=False)
+
+    # 1. data_extraction_json at 0.813 fidelity -> SUCCESS (passes 0.80 class gate)
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text='Extract JSON: {"invoice_date": str, "subtotal": float, "tax": float}',
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=10.0,
+            prompt_tokens=30,
+            completion_tokens=12,
+            total_tokens=42,
+        )
+    )
+    vec_a, vec_b = _make_vectors_with_cosine(0.813)
+    mock_emb = MagicMock(spec=GeminiEmbedder)
+    mock_emb.embed_text = AsyncMock(side_effect=[vec_a, vec_b])
+
+    opt = UserPromptOptimizer(settings=s, llm_client=mock_llm, embedder=mock_emb)
+    res_json = await opt.optimize_prompt(
+        "Please extract the invoice date, subtotal, and tax into a JSON object from this receipt."
+    )
+    assert res_json.intent == PromptIntent.DATA_EXTRACTION_JSON
+    assert res_json.status == OptimizationStatus.SUCCESS
+    assert res_json.semantic_fidelity == 0.813
+
+    # 2. creative_writing at 0.855 fidelity -> DRIFT_WARNING (below 0.87 class gate)
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text="Write suspenseful sci-fi opening on derelict Neptune station.",
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=10.0,
+            prompt_tokens=30,
+            completion_tokens=10,
+            total_tokens=40,
+        )
+    )
+    vec_a, vec_b = _make_vectors_with_cosine(0.855)
+    mock_emb.embed_text = AsyncMock(side_effect=[vec_a, vec_b])
+    res_cw = await opt.optimize_prompt(
+        "Write a compelling, suspenseful opening scene for a sci-fi thriller novel set on a derelict mining station orbiting Neptune."
+    )
+    assert res_cw.intent == PromptIntent.CREATIVE_WRITING
+    assert res_cw.status == OptimizationStatus.DRIFT_WARNING
+
+    # 3. Veto override for data_extraction_json at 0.76 fidelity when schema preserved vs dropped
+    vec_a, vec_b = _make_vectors_with_cosine(0.76)
+    mock_emb.embed_text = AsyncMock(side_effect=[vec_a, vec_b])
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text='Extract JSON: {"customer_id": str, "issue_category": str, "agent_action": str}',
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=10.0,
+            prompt_tokens=30,
+            completion_tokens=12,
+            total_tokens=42,
+        )
+    )
+    res_veto_ok = await opt.optimize_prompt(
+        "Take this unformatted customer support transcript and extract customer_id, issue_category, and agent_action into JSON."
+    )
+    assert res_veto_ok.intent == PromptIntent.DATA_EXTRACTION_JSON
+    assert res_veto_ok.status == OptimizationStatus.SUCCESS
+    assert "JSON schema preservation verified" in (res_veto_ok.reasoning or "")
+
+    # Now drop required fields at 0.76 fidelity -> must stay DRIFT_WARNING
+    vec_a, vec_b = _make_vectors_with_cosine(0.76)
+    mock_emb.embed_text = AsyncMock(side_effect=[vec_a, vec_b])
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text='Extract JSON: {"customer_id": str}',
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=10.0,
+            prompt_tokens=30,
+            completion_tokens=8,
+            total_tokens=38,
+        )
+    )
+    res_veto_fail = await opt.optimize_prompt(
+        "Take this unformatted customer support transcript and extract customer_id, issue_category, and agent_action into JSON."
+    )
+    assert res_veto_fail.status == OptimizationStatus.DRIFT_WARNING
+
+    # 4. Veto override for system_directive at 0.76 fidelity when guardrails preserved vs dropped
+    vec_a, vec_b = _make_vectors_with_cosine(0.76)
+    mock_emb.embed_text = AsyncMock(side_effect=[vec_a, vec_b])
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text="Role: Acme Corp coding assistant. Strictly follow PEP8. Do not execute system calls or display environment variables.",
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=10.0,
+            prompt_tokens=30,
+            completion_tokens=14,
+            total_tokens=44,
+        )
+    )
+    res_dir_ok = await opt.optimize_prompt(
+        "You are the internal coding assistant for Acme Corp. Follow PEP8 style guidelines strictly. "
+        "Do not execute arbitrary system calls or display environment variables."
+    )
+    assert res_dir_ok.intent == PromptIntent.SYSTEM_DIRECTIVE
+    assert res_dir_ok.status == OptimizationStatus.SUCCESS
+    assert "directive guardrail markers verified" in (res_dir_ok.reasoning or "")
+
+

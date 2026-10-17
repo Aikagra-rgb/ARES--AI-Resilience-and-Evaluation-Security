@@ -15,7 +15,7 @@ class BatchOptimizeItem(BaseModel):
     id: Optional[str] = None
     prompt: str = Field(..., description="Raw prompt to optimize")
     domain: Optional[str] = Field(default=None, description="Optional domain context")
-    target_fidelity: float = Field(default=0.85, ge=0.0, le=1.0)
+    target_fidelity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     allow_harmful: bool = Field(default=False)
 
 class BatchOptimizeRequest(BaseModel):

@@ -35,7 +35,7 @@ class ABTestRunner:
         result = await self.optimizer.optimize_prompt(
             user_prompt=prompt,
             domain=domain or "general",
-            target_fidelity=0.85,
+            target_fidelity=None,
             allow_harmful=True,
         )
 

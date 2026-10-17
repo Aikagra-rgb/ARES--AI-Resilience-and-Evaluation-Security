@@ -106,7 +106,7 @@ async def run_demo():
         result = await optimizer.optimize_prompt(
             user_prompt=scn["prompt"],
             domain=scn["domain"],
-            target_fidelity=0.85,
+            target_fidelity=None,
             allow_harmful=False,
         )
         elapsed_sec = time.perf_counter() - t_start

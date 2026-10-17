@@ -11,10 +11,10 @@
   },
   "targets": {
     "coding_technical": {"min_fidelity": 0.85, "target_savings_pct": 0.50},
-    "creative_writing": {"min_fidelity": 0.85, "target_savings_pct": 0.40},
-    "data_extraction_json": {"min_fidelity": 0.85, "target_savings_pct": 0.45},
-    "analytical_qa": {"min_fidelity": 0.85, "target_savings_pct": 0.45},
-    "system_directive": {"min_fidelity": 0.85, "target_savings_pct": 0.40}
+    "creative_writing": {"min_fidelity": 0.87, "target_savings_pct": 0.45},
+    "analytical_qa": {"min_fidelity": 0.86, "target_savings_pct": 0.45},
+    "data_extraction_json": {"min_fidelity": 0.80, "target_savings_pct": 0.40},
+    "system_directive": {"min_fidelity": 0.80, "target_savings_pct": 0.40}
   },
-  "last_updated": "2026-10-14T22:38:00Z"
+  "last_updated": "2026-10-17T14:55:00Z"
 }

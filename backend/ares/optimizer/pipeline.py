@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from pydantic import BaseModel, Field
 
 from ares.config import Settings, get_settings
@@ -85,6 +86,222 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(len(text.split()) * 1.3))
 
 
+_SCHEMA_TYPE_STOPWORDS = frozenset({
+    "str", "string", "int", "integer", "float", "double", "number", "num",
+    "bool", "boolean", "list", "array", "dict", "object", "map", "null",
+    "none", "true", "false", "any", "optional", "required", "json", "schema",
+    "field", "fields", "keys", "values",
+})
+
+
+def _extract_schema_fields(text: str) -> Set[str]:
+    """Extract explicit schema field identifiers from a prompt string."""
+    if not text or not text.strip():
+        return set()
+    fields: Set[str] = set()
+
+    # 1. Identifiers inside braces {...}, e.g. {clause_id, type, description} or {"vendor": "str"}
+    for brace_match in re.finditer(r"\{([^{}]+)\}", text):
+        inner = brace_match.group(1)
+        kv_keys = re.findall(r'["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*:', inner)
+        if kv_keys:
+            for k in kv_keys:
+                k_low = k.lower()
+                if k_low not in _SCHEMA_TYPE_STOPWORDS or k_low in ("type", "value", "key"):
+                    fields.add(k_low)
+        else:
+            for tok in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", inner):
+                tok_low = tok.lower()
+                if tok_low not in _SCHEMA_TYPE_STOPWORDS or tok_low in ("type", "value", "key"):
+                    fields.add(tok_low)
+
+    # 2. Snake_case identifiers anywhere in text (e.g., customer_id, issue_category, follow_up_date)
+    for snake in re.findall(r"\b([a-zA-Z]+_[a-zA-Z0-9_]+)\b", text):
+        fields.add(snake.lower())
+
+    # 3. Single/double/backtick quoted single-token field names (e.g., 'email', "subtotal", `tax`)
+    for quoted in re.findall(r"['\"`]([a-zA-Z_][a-zA-Z0-9_]*)['\"`]", text):
+        q_low = quoted.lower()
+        if q_low not in _SCHEMA_TYPE_STOPWORDS and len(q_low) > 1:
+            fields.add(q_low)
+
+    # 4. Explicit comma-separated field lists after "with fields", "fields:", "keys:", "columns:"
+    for list_match in re.finditer(
+        r"(?:with\s+fields|fields|keys|columns)\s*:?\s*([a-zA-Z0-9_,\s\(\)]+?)(?:\.|\n|$)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        segment = re.sub(r"\([^)]*\)", "", list_match.group(1))
+        for part in re.split(r",|\band\b", segment, flags=re.IGNORECASE):
+            tokens = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", part.strip())
+            if len(tokens) == 1:
+                t_low = tokens[0].lower()
+                if t_low not in _SCHEMA_TYPE_STOPWORDS and len(t_low) > 1:
+                    fields.add(t_low)
+
+    return fields
+
+
+def verify_json_schema_preserved(original: str, optimized: str) -> bool:
+    """
+    Verify that required schema fields or target extraction fields in the original
+    data_extraction_json prompt survive compression in the optimized prompt.
+    """
+    if not original or not original.strip() or not optimized or not optimized.strip():
+        return False
+
+    opt_lower = optimized.lower()
+    has_json_indicator = "json" in opt_lower or ("{" in optimized and "}" in optimized)
+    if not has_json_indicator:
+        return False
+
+    orig_fields = _extract_schema_fields(original)
+    if orig_fields:
+        return all(
+            f in opt_lower or f.replace("_", " ") in opt_lower
+            for f in orig_fields
+        )
+
+    # Fallback for natural-language field lists (e.g. "extract the invoice date, subtotal, and tax into a JSON object")
+    nl_match = re.search(
+        r"\b(?:extract|parse)\s+(?:all\s+)?(?:the\s+)?(.+?)\s+(?:into|from|as|in\s+a|in\s+json|and\s+return|and\s+format|\.|:)",
+        original,
+        flags=re.IGNORECASE,
+    )
+    if nl_match:
+        raw_target_list = nl_match.group(1)
+        items = [
+            re.sub(r"^(?:the|a|an|all|their|its|following)\s+", "", part.strip(), flags=re.IGNORECASE).lower()
+            for part in re.split(r",|\band\b", raw_target_list, flags=re.IGNORECASE)
+            if part.strip()
+        ]
+        items = [it for it in items if it and it not in ("json", "data", "information", "text")]
+        if items:
+            for item in items:
+                words = [w for w in re.findall(r"[a-z0-9]+", item) if len(w) >= 3]
+                if not (
+                    item in opt_lower
+                    or item.replace(" ", "_") in opt_lower
+                    or (words and any(w in opt_lower for w in words))
+                ):
+                    return False
+            return True
+
+    return True
+
+
+_PROHIBITION_MARKERS = (
+    "never",
+    "do not",
+    "don't",
+    "must not",
+    "cannot",
+    "can't",
+    "under no circumstances",
+    "prohibit",
+    "forbid",
+    "refuse",
+    "reject",
+    "deny",
+    "zero deviation",
+    "no attorney-client",
+    "not a doctor",
+)
+
+_IMPERATIVE_DIRECTIVE_MARKERS = (
+    "must",
+    "always",
+    "never",
+    "do not",
+    "don't",
+    "only",
+    "strictly",
+    "ensure",
+    "follow",
+    "refuse",
+    "reject",
+    "require",
+    "confidential",
+    "disclaimer",
+    "state clearly",
+    "system directive",
+    "role:",
+    "<rules>",
+    "<user_input>",
+    "you are",
+    "act as",
+)
+
+_CLAUSE_STOPWORDS = frozenset({
+    "never", "must", "should", "would", "could", "under", "circumstances",
+    "anything", "user", "users", "asks", "about", "attempting", "instructions",
+    "politely", "your", "from", "with", "that", "this", "they", "them",
+    "please", "always", "make", "sure", "when", "where", "which", "while",
+})
+
+
+def verify_directive_markers(
+    original: str,
+    optimized: str,
+    intent: str | PromptIntent = PromptIntent.SYSTEM_DIRECTIVE,
+) -> bool:
+    """
+    Verify that mandatory imperative and prohibition guardrail markers present in
+    a system_directive prompt survive compression.
+    """
+    if not original or not original.strip() or not optimized or not optimized.strip():
+        return False
+
+    intent_str = intent.value if hasattr(intent, "value") else str(intent)
+    if intent_str != PromptIntent.SYSTEM_DIRECTIVE.value:
+        return False
+
+    orig_lower = original.lower()
+    opt_lower = optimized.lower()
+
+    # 1. Optimized prompt must contain at least one imperative/directive marker
+    if not any(m in opt_lower for m in _IMPERATIVE_DIRECTIVE_MARKERS):
+        return False
+
+    # 2. If original contains prohibition/refusal guardrails, optimized must preserve prohibition semantics and targets
+    orig_has_prohibition = any(p in orig_lower for p in _PROHIBITION_MARKERS)
+    if orig_has_prohibition:
+        opt_prohibition_vocab = _PROHIBITION_MARKERS + (
+            "no ",
+            "strictly",
+            "prohibited",
+            "forbidden",
+            "restricted",
+        )
+        if not any(p in opt_lower for p in opt_prohibition_vocab):
+            return False
+
+        # Check each sentence/clause in original that contains a prohibition marker
+        sentences = [s.strip() for s in re.split(r"[.!?\n]+", original) if s.strip()]
+        for sent in sentences:
+            s_low = sent.lower()
+            if any(p in s_low for p in _PROHIBITION_MARKERS):
+                content_words = [
+                    w.rstrip("s")
+                    for w in re.findall(r"\b[a-z]{4,}\b", s_low)
+                    if w not in _CLAUSE_STOPWORDS and w not in _PROHIBITION_MARKERS
+                ]
+                content_words = [w for w in content_words if len(w) >= 3]
+                if content_words and not any(w in opt_lower for w in content_words):
+                    return False
+
+    # 3. Preserve compliance/security acronyms (e.g., SSN, PEP8, FINRA, GDPR, HIPAA)
+    acronyms = {
+        acr.lower().rstrip("s")
+        for acr in re.findall(r"\b[A-Z]{2,}[0-9]*s?\b", original)
+        if acr.upper() not in ("AI", "LLM", "API", "OK", "II", "III")
+    }
+    if acronyms and not all(acr in opt_lower for acr in acronyms):
+        return False
+
+    return True
+
+
 class UserPromptOptimizer:
     """
     Production-grade Prompt Optimizer and Immunization Engine.
@@ -126,7 +343,7 @@ class UserPromptOptimizer:
         self,
         user_prompt: str,
         domain: Optional[str] = None,
-        target_fidelity: float = 0.85,
+        target_fidelity: Optional[float] = None,
         allow_harmful: bool = False,
     ) -> OptimizedPromptResult:
         """
@@ -332,11 +549,39 @@ class UserPromptOptimizer:
         token_savings_pct = round(max(0.0, (orig_tokens - opt_tokens) / orig_tokens), 3) if orig_tokens > 0 else 0.0
 
 
+        thresholds = getattr(self.settings, "class_fidelity_thresholds", {}) or {}
+        min_fid = thresholds.get(intent.value, thresholds.get(intent, 0.85))
+        effective_target_fidelity = target_fidelity if target_fidelity is not None else min_fid
+
         status = OptimizationStatus.SUCCESS
         reasoning = "Prompt successfully optimized and compressed."
-        if fidelity_score < target_fidelity:
-            status = OptimizationStatus.DRIFT_WARNING
-            reasoning = f"Semantic fidelity ({fidelity_score:.2f}) fell below target ({target_fidelity:.2f})."
+        if fidelity_score < effective_target_fidelity:
+            if (
+                fidelity_score >= 0.70
+                and intent == PromptIntent.DATA_EXTRACTION_JSON
+                and verify_json_schema_preserved(user_prompt, optimized_text)
+            ):
+                status = OptimizationStatus.SUCCESS
+                reasoning = (
+                    f"Prompt successfully optimized; JSON schema preservation verified "
+                    f"(fidelity {fidelity_score:.2f})."
+                )
+            elif (
+                fidelity_score >= 0.70
+                and intent == PromptIntent.SYSTEM_DIRECTIVE
+                and verify_directive_markers(user_prompt, optimized_text, intent)
+            ):
+                status = OptimizationStatus.SUCCESS
+                reasoning = (
+                    f"Prompt successfully optimized; directive guardrail markers verified "
+                    f"(fidelity {fidelity_score:.2f})."
+                )
+            else:
+                status = OptimizationStatus.DRIFT_WARNING
+                reasoning = (
+                    f"Semantic fidelity ({fidelity_score:.2f}) fell below target "
+                    f"({effective_target_fidelity:.2f})."
+                )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
 

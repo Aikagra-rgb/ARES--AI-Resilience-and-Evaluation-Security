@@ -40,16 +40,17 @@ class AresClient:
         self,
         prompt: str,
         domain: Optional[str] = None,
-        target_fidelity: float = 0.85,
+        target_fidelity: Optional[float] = None,
     ) -> OptimizationResult:
         """
         Optimize and compress a user prompt via the ARES API.
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "prompt": prompt,
             "domain": domain,
-            "target_fidelity": target_fidelity,
         }
+        if target_fidelity is not None:
+            payload["target_fidelity"] = target_fidelity
         try:
             response = await self.client.post(
                 f"{self.config.base_url}/api/v1/optimizer/optimize",

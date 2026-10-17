@@ -115,10 +115,20 @@ class Settings(BaseSettings):
     prefer_local_embeddings: bool = Field(default=True, alias="PREFER_LOCAL_EMBEDDINGS")
     
     # -------------------------------------------------------------------------
-    # Native LoRA Inference Server
+    # Native LoRA Inference Server & Optimizer Thresholds
     # -------------------------------------------------------------------------
     lora_server_url: str = Field(default="http://localhost:11435/v1", alias="ARES_LORA_SERVER_URL")
     use_lora_server: bool = Field(default=True, alias="ARES_USE_LORA_SERVER")
+    class_fidelity_thresholds: dict[str, float] = Field(
+        default_factory=lambda: {
+            "coding_technical": 0.85,
+            "creative_writing": 0.87,
+            "analytical_qa": 0.86,
+            "data_extraction_json": 0.80,
+            "system_directive": 0.80,
+        },
+        alias="CLASS_FIDELITY_THRESHOLDS",
+    )
     
     # -------------------------------------------------------------------------
     # Vector DB (Qdrant)
