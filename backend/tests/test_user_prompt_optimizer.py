@@ -311,7 +311,35 @@ def test_verify_json_schema_preserved():
     assert verify_json_schema_preserved(orig_brace, "Return JSON array: [{clause_id, type, description}].") is True
     assert verify_json_schema_preserved(orig_brace, "Return JSON array: [{clause_id, type}].") is False
 
-    # 2. Snake_case field names preserved vs dropped
+    # 2. Nested JSON schema braces (outer and inner keys must all be preserved)
+    orig_nested = (
+        "Extract user profile into JSON conforming to "
+        "{user: {id: int, roles: [str]}, org: {org_id: int, name: str}}."
+    )
+    assert verify_json_schema_preserved(
+        orig_nested,
+        'Extract JSON: {"user": {"id": int, "roles": [str]}, "org": {"org_id": int, "name": str}}',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_nested,
+        'Extract JSON: {"id": int, "roles": [str], "org_id": int, "name": str}',
+    ) is False
+
+    # 3. Parenthetical sub-fields in "with fields" lists (SCN-02 pattern)
+    orig_parenthetical = (
+        "Output pure valid JSON with fields vendor, date, items (description, "
+        "quantity, unit_price, total), subtotal, tax, total."
+    )
+    assert verify_json_schema_preserved(
+        orig_parenthetical,
+        'Output JSON: {"vendor": str, "date": str, "items": [{"description": str, "quantity": int, "unit_price": float, "total": float}], "subtotal": float, "tax": float, "total": float}',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_parenthetical,
+        'Output JSON: {"vendor": str, "date": str, "items": [{"unit_price": float, "total": float}], "subtotal": float, "tax": float, "total": float}',
+    ) is False
+
+    # 4. Snake_case field names preserved vs dropped
     orig_snake = (
         "Take this support transcript and extract customer_id, issue_category, "
         "and agent_action into JSON."
@@ -325,7 +353,7 @@ def test_verify_json_schema_preserved():
         'Extract JSON: {"customer_id": str}',
     ) is False
 
-    # 3. Natural language field extraction preserved vs dropped
+    # 5. Natural language field extraction ("extract ...", "containing ...", trailing prepositional qualifiers)
     orig_nl = "Please extract the invoice date, subtotal, and tax into a JSON object from this receipt."
     assert verify_json_schema_preserved(
         orig_nl,
@@ -336,14 +364,40 @@ def test_verify_json_schema_preserved():
         'Extract JSON {"invoice_date"} from receipt.',
     ) is False
 
-    # 4. Edge cases: missing JSON indicator or empty inputs
+    orig_containing = (
+        "Convert the following list of employee reviews into structured JSON data "
+        "containing sentiment score (-1 to 1), primary complaint, and department."
+    )
+    assert verify_json_schema_preserved(
+        orig_containing,
+        'Convert reviews to JSON: {"sentiment_score": float, "primary_complaint": str, "department": str}',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_containing,
+        'Convert reviews to JSON: {"department": str}',
+    ) is False
+
+    orig_sec = (
+        "From the SEC 10-K filing excerpt below, extract net income, revenue growth rate, "
+        "and EBITDA for fiscal year 2025. Format your answer as raw JSON."
+    )
+    assert verify_json_schema_preserved(
+        orig_sec,
+        'Extract JSON for fiscal year 2025: {"net_income": float, "revenue_growth_rate": float, "ebitda": float}',
+    ) is True
+    assert verify_json_schema_preserved(
+        orig_sec,
+        'Extract JSON for fiscal year 2025: {"net_income": float, "revenue_growth_rate": float}',
+    ) is False
+
+    # 6. Edge cases: missing JSON indicator or empty inputs
     assert verify_json_schema_preserved(orig_nl, "Summarize invoice date, subtotal, and tax.") is False
     assert verify_json_schema_preserved("", '{"a": 1}') is False
     assert verify_json_schema_preserved(orig_nl, "   ") is False
 
 
 def test_verify_directive_markers():
-    """Verify imperative and prohibition guardrail marker preservation for system_directive."""
+    """Verify imperative, obligation, and prohibition guardrail marker preservation for system_directive."""
     from ares.optimizer.pipeline import verify_directive_markers
 
     orig_directive = (
@@ -366,6 +420,22 @@ def test_verify_directive_markers():
     assert verify_directive_markers(orig_directive, opt_valid, PromptIntent.SYSTEM_DIRECTIVE) is True
     assert verify_directive_markers(orig_directive, opt_missing_prohibition, PromptIntent.SYSTEM_DIRECTIVE) is False
     assert verify_directive_markers(orig_directive, opt_missing_acronym, PromptIntent.SYSTEM_DIRECTIVE) is False
+
+    # Positive-only obligation directive without prohibition markers or uppercase acronyms
+    orig_positive_only = (
+        "You are a clinical triage assistant for Mercy Hospital. "
+        "You must always ask for the patient's age, primary symptoms, and symptom duration before suggesting a department. "
+        "Ensure every response ends with an emergency care disclaimer."
+    )
+    opt_positive_valid = (
+        "Role: Mercy Hospital triage. Always require patient age, symptoms, and duration before suggesting a department. "
+        "Ensure emergency care disclaimer on every response."
+    )
+    opt_positive_dropped = (
+        "Role: Mercy Hospital clinical triage assistant. Suggest a department to the user."
+    )
+    assert verify_directive_markers(orig_positive_only, opt_positive_valid, PromptIntent.SYSTEM_DIRECTIVE) is True
+    assert verify_directive_markers(orig_positive_only, opt_positive_dropped, PromptIntent.SYSTEM_DIRECTIVE) is False
 
     # Non-system_directive intent or empty strings return False
     assert verify_directive_markers(orig_directive, opt_valid, PromptIntent.CODING_TECHNICAL) is False

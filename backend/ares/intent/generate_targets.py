@@ -169,7 +169,7 @@ async def process_single_candidate(
     item: Dict[str, Any],
     semaphore: asyncio.Semaphore,
     min_savings_pct: float = 0.35,
-    min_fidelity: float = 0.85,
+    min_fidelity: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Process one candidate prompt through the optimizer pipeline with quality checks.
@@ -178,13 +178,15 @@ async def process_single_candidate(
     intent = item["intent"]
     domain = item.get("domain", "general")
     orig_tokens = _estimate_tokens(raw_prompt)
+    thresholds = getattr(optimizer.settings, "class_fidelity_thresholds", {}) or {}
+    effective_min_fid = min_fidelity if min_fidelity is not None else thresholds.get(intent, 0.85)
 
     async with semaphore:
         try:
             res = await optimizer.optimize_prompt(
                 user_prompt=raw_prompt,
                 domain=domain,
-                target_fidelity=min_fidelity,
+                target_fidelity=effective_min_fid,
                 allow_harmful=True,  # Allow for training data synthesis
             )
             opt_text = res.optimized_prompt or ""
@@ -193,8 +195,8 @@ async def process_single_candidate(
             fidelity = res.semantic_fidelity
             gen_source = "llama3.1_generated"
 
-            # Quality Check: Does the generated output meet the 35% target savings and fidelity threshold?
-            if savings_pct < min_savings_pct or fidelity < min_fidelity or opt_tokens >= orig_tokens:
+            # Quality Check: Does the generated output meet the target savings and class fidelity threshold?
+            if savings_pct < min_savings_pct or res.status == OptimizationStatus.DRIFT_WARNING or opt_tokens >= orig_tokens:
                 # Apply directive ground-truth compression fallback
                 opt_text = apply_ground_truth_compression(raw_prompt, intent, domain)
                 opt_tokens = _estimate_tokens(opt_text)

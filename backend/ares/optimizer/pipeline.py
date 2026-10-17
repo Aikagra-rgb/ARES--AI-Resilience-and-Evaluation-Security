@@ -100,38 +100,44 @@ def _extract_schema_fields(text: str) -> Set[str]:
         return set()
     fields: Set[str] = set()
 
-    # 1. Identifiers inside braces {...}, e.g. {clause_id, type, description} or {"vendor": "str"}
-    for brace_match in re.finditer(r"\{([^{}]+)\}", text):
-        inner = brace_match.group(1)
-        kv_keys = re.findall(r'["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*:', inner)
-        if kv_keys:
-            for k in kv_keys:
-                k_low = k.lower()
-                if k_low not in _SCHEMA_TYPE_STOPWORDS or k_low in ("type", "value", "key"):
-                    fields.add(k_low)
-        else:
-            for tok in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", inner):
-                tok_low = tok.lower()
-                if tok_low not in _SCHEMA_TYPE_STOPWORDS or tok_low in ("type", "value", "key"):
-                    fields.add(tok_low)
+    # 1. Identifiers inside braces {...}, peeling nested braces from inside out
+    working = text
+    while True:
+        matches = list(re.finditer(r"\{([^{}]*)\}", working))
+        if not matches:
+            break
+        for brace_match in matches:
+            inner = brace_match.group(1)
+            kv_keys = re.findall(r'["\']?([a-zA-Z_][a-zA-Z0-9_]*)["\']?\s*:', inner)
+            if kv_keys:
+                for k in kv_keys:
+                    k_low = k.lower()
+                    if k_low not in _SCHEMA_TYPE_STOPWORDS or k_low in ("type", "value", "key"):
+                        fields.add(k_low)
+            else:
+                for tok in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", inner):
+                    tok_low = tok.lower()
+                    if tok_low not in _SCHEMA_TYPE_STOPWORDS or tok_low in ("type", "value", "key"):
+                        fields.add(tok_low)
+        working = re.sub(r"\{[^{}]*\}", "", working)
 
     # 2. Snake_case identifiers anywhere in text (e.g., customer_id, issue_category, follow_up_date)
     for snake in re.findall(r"\b([a-zA-Z]+_[a-zA-Z0-9_]+)\b", text):
         fields.add(snake.lower())
 
     # 3. Single/double/backtick quoted single-token field names (e.g., 'email', "subtotal", `tax`)
-    for quoted in re.findall(r"['\"`]([a-zA-Z_][a-zA-Z0-9_]*)['\"`]", text):
-        q_low = quoted.lower()
+    for quoted in re.findall(r"(['\"`])([a-zA-Z_][a-zA-Z0-9_]*)\1", text):
+        q_low = quoted[1].lower()
         if q_low not in _SCHEMA_TYPE_STOPWORDS and len(q_low) > 1:
             fields.add(q_low)
 
     # 4. Explicit comma-separated field lists after "with fields", "fields:", "keys:", "columns:"
     for list_match in re.finditer(
-        r"(?:with\s+fields|fields|keys|columns)\s*:?\s*([a-zA-Z0-9_,\s\(\)]+?)(?:\.|\n|$)",
+        r"(?:with\s+fields|fields|keys|columns)\s*:?\s*([a-zA-Z0-9_,\s\(\)/-]+?)(?:\.|\n|$)",
         text,
         flags=re.IGNORECASE,
     ):
-        segment = re.sub(r"\([^)]*\)", "", list_match.group(1))
+        segment = re.sub(r"[()]", ",", list_match.group(1))
         for part in re.split(r",|\band\b", segment, flags=re.IGNORECASE):
             tokens = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", part.strip())
             if len(tokens) == 1:
@@ -162,20 +168,21 @@ def verify_json_schema_preserved(original: str, optimized: str) -> bool:
             for f in orig_fields
         )
 
-    # Fallback for natural-language field lists (e.g. "extract the invoice date, subtotal, and tax into a JSON object")
+    # Fallback for natural-language field lists (e.g. "extract the invoice date, subtotal, and tax into a JSON object"
+    # or "into structured JSON data containing sentiment score (-1 to 1), primary complaint, and department.")
     nl_match = re.search(
-        r"\b(?:extract|parse)\s+(?:all\s+)?(?:the\s+)?(.+?)\s+(?:into|from|as|in\s+a|in\s+json|and\s+return|and\s+format|\.|:)",
+        r"\b(?:extract|parse|containing|including)\s+(?:all\s+)?(?:the\s+)?(.+?)\s*(?:into|from|as|in\s+a|in\s+json|and\s+return|and\s+format|\.|:|$)",
         original,
         flags=re.IGNORECASE,
     )
     if nl_match:
-        raw_target_list = nl_match.group(1)
-        items = [
-            re.sub(r"^(?:the|a|an|all|their|its|following)\s+", "", part.strip(), flags=re.IGNORECASE).lower()
-            for part in re.split(r",|\band\b", raw_target_list, flags=re.IGNORECASE)
-            if part.strip()
-        ]
-        items = [it for it in items if it and it not in ("json", "data", "information", "text")]
+        raw_target_list = re.sub(r"\([^)]*\)", "", nl_match.group(1))
+        items = []
+        for part in re.split(r",|\band\b", raw_target_list, flags=re.IGNORECASE):
+            cleaned = re.sub(r"^(?:the|a|an|all|their|its|following)\s+", "", part.strip(), flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s+(?:for|in|during|from|across|over)\s+.*$", "", cleaned, flags=re.IGNORECASE).strip().lower()
+            if cleaned and cleaned not in ("json", "data", "information", "text"):
+                items.append(cleaned)
         if items:
             for item in items:
                 words = [w for w in re.findall(r"[a-z0-9]+", item) if len(w) >= 3]
@@ -208,6 +215,19 @@ _PROHIBITION_MARKERS = (
     "not a doctor",
 )
 
+_OBLIGATION_MARKERS = (
+    "must",
+    "always",
+    "only",
+    "strictly",
+    "ensure",
+    "require",
+    "required",
+    "mandatory",
+    "state clearly",
+    "disclaimer",
+)
+
 _IMPERATIVE_DIRECTIVE_MARKERS = (
     "must",
     "always",
@@ -237,6 +257,8 @@ _CLAUSE_STOPWORDS = frozenset({
     "anything", "user", "users", "asks", "about", "attempting", "instructions",
     "politely", "your", "from", "with", "that", "this", "they", "them",
     "please", "always", "make", "sure", "when", "where", "which", "while",
+    "only", "strictly", "ensure", "require", "required", "mandatory",
+    "every", "response", "responses", "include", "state", "clearly", "follow",
 })
 
 
@@ -246,8 +268,8 @@ def verify_directive_markers(
     intent: str | PromptIntent = PromptIntent.SYSTEM_DIRECTIVE,
 ) -> bool:
     """
-    Verify that mandatory imperative and prohibition guardrail markers present in
-    a system_directive prompt survive compression.
+    Verify that mandatory imperative, obligation, and prohibition guardrail markers
+    present in a system_directive prompt survive compression.
     """
     if not original or not original.strip() or not optimized or not optimized.strip():
         return False
@@ -263,7 +285,7 @@ def verify_directive_markers(
     if not any(m in opt_lower for m in _IMPERATIVE_DIRECTIVE_MARKERS):
         return False
 
-    # 2. If original contains prohibition/refusal guardrails, optimized must preserve prohibition semantics and targets
+    # 2. If original contains prohibition/refusal guardrails, optimized must preserve prohibition semantics
     orig_has_prohibition = any(p in orig_lower for p in _PROHIBITION_MARKERS)
     if orig_has_prohibition:
         opt_prohibition_vocab = _PROHIBITION_MARKERS + (
@@ -276,21 +298,25 @@ def verify_directive_markers(
         if not any(p in opt_lower for p in opt_prohibition_vocab):
             return False
 
-        # Check each sentence/clause in original that contains a prohibition marker
-        sentences = [s.strip() for s in re.split(r"[.!?\n]+", original) if s.strip()]
-        for sent in sentences:
-            s_low = sent.lower()
-            if any(p in s_low for p in _PROHIBITION_MARKERS):
-                content_words = [
-                    w.rstrip("s")
-                    for w in re.findall(r"\b[a-z]{4,}\b", s_low)
-                    if w not in _CLAUSE_STOPWORDS and w not in _PROHIBITION_MARKERS
-                ]
-                content_words = [w for w in content_words if len(w) >= 3]
-                if content_words and not any(w in opt_lower for w in content_words):
-                    return False
+    # 3. Check each sentence/clause in original that contains a prohibition or positive obligation marker
+    sentences = [s.strip() for s in re.split(r"[.!?\n]+", original) if s.strip()]
+    for sent in sentences:
+        s_low = sent.lower()
+        has_prohibition = any(p in s_low for p in _PROHIBITION_MARKERS)
+        has_obligation = any(o in s_low for o in _OBLIGATION_MARKERS)
+        if has_prohibition or has_obligation:
+            content_words = [
+                w.rstrip("s")
+                for w in re.findall(r"\b[a-z0-9]{4,}\b", s_low)
+                if w not in _CLAUSE_STOPWORDS
+                and w not in _PROHIBITION_MARKERS
+                and w not in _OBLIGATION_MARKERS
+            ]
+            content_words = [w for w in content_words if len(w) >= 3]
+            if content_words and not any(w in opt_lower for w in content_words):
+                return False
 
-    # 3. Preserve compliance/security acronyms (e.g., SSN, PEP8, FINRA, GDPR, HIPAA)
+    # 4. Preserve compliance/security acronyms (e.g., SSN, PEP8, FINRA, GDPR, HIPAA)
     acronyms = {
         acr.lower().rstrip("s")
         for acr in re.findall(r"\b[A-Z]{2,}[0-9]*s?\b", original)
