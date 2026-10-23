@@ -105,4 +105,22 @@ public sealed class MockDataTests
         Assert.NotEmpty(catalogue.Items);
         Assert.Contains(rooms, room => room.PrerequisiteRoomIds.Count == 0);
     }
+
+    [Fact]
+    public async Task OptimizePrompt_populates_calibrated_fidelity_verification_and_mitigated_threats()
+    {
+        var client = new MockAresApiClient();
+
+        var directiveResult = await client.OptimizePromptAsync(
+            new OptimizePromptRequest("Set operating policy: strictly enforce that agents never share customer IDs.", "general", null, false),
+            CancellationToken.None
+        );
+
+        Assert.Equal("OPTIMIZED", directiveResult.Status);
+        Assert.Equal("SYSTEM_DIRECTIVE", directiveResult.Intent);
+        Assert.Equal(0.80, directiveResult.TargetFidelity);
+        Assert.True(directiveResult.VerificationPassed);
+        Assert.NotNull(directiveResult.MitigatedThreats);
+        Assert.NotEmpty(directiveResult.MitigatedThreats!);
+    }
 }

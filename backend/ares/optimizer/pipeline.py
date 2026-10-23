@@ -60,6 +60,9 @@ class OptimizedPromptResult(BaseModel):
     optimized_tokens: int
     token_savings_pct: float
     semantic_fidelity: float = Field(ge=0.0, le=1.0)
+    target_fidelity: float = Field(default=0.85, ge=0.0, le=1.0)
+    verification_passed: bool = True
+    mitigated_threats: List[str] = Field(default_factory=list)
     security_verdict: str
     security_risk_score: float = Field(ge=0.0, le=1.0)
     latency_ms: float
@@ -343,6 +346,7 @@ class UserPromptOptimizer:
         exemplar_store: Optional[QdrantExemplarStore] = None,
         llm_client: Optional[LLMClient] = None,
         embedder: Optional[GeminiEmbedder] = None,
+        attack_store: Optional[Any] = None,
     ):
         self.settings = settings or get_settings()
         self.security_detector = security_detector or StructuralAttackDetector(
@@ -353,7 +357,6 @@ class UserPromptOptimizer:
         if classifier is not None:
             self.classifier = classifier
         else:
-            scaled_path = self.settings.app_data_dir if hasattr(self.settings, "app_data_dir") else None
             from pathlib import Path
             data_dir = Path(__file__).parent.parent / "intent" / "data"
             scaled_joblib = data_dir / "intent_classifier_scaled_5000.joblib"
@@ -364,6 +367,72 @@ class UserPromptOptimizer:
         self.exemplar_store = exemplar_store or QdrantExemplarStore(settings=self.settings)
         self.llm_client = llm_client
         self.embedder = embedder or GeminiEmbedder(settings=self.settings)
+        self.attack_store = attack_store
+
+    async def _retrieve_threat_context(
+        self,
+        user_prompt: str,
+        intent: PromptIntent,
+        sec_result: Any,
+        domain: Optional[str] = None,
+    ) -> List[str]:
+        """
+        Retrieve matched adversarial attack techniques / categories from the red-team
+        Qdrant corpus or structural detections to close the Red-Team -> Optimizer loop.
+        """
+        threats: List[str] = []
+
+        # 1. Include any structural detector categories first
+        for det in getattr(sec_result, "detections", []) or []:
+            label = (
+                getattr(det, "category", None)
+                or getattr(getattr(det, "attack_type", None), "value", None)
+                or getattr(det, "pattern_name", None)
+                or getattr(det, "rule_id", None)
+            )
+            if label and str(label) not in threats:
+                threats.append(str(label))
+
+        # 2. Query Qdrant red-team attack corpus when optimizing system directives,
+        # security-sensitive domains, or when an attack_store is explicitly configured
+        should_query_corpus = (
+            intent == PromptIntent.SYSTEM_DIRECTIVE
+            or bool(threats)
+            or self.attack_store is not None
+            or (domain and domain.lower() in ("defense", "fintech", "finance", "healthcare", "legal"))
+        )
+        if not should_query_corpus:
+            return threats[:3]
+
+        try:
+            store = self.attack_store
+            if store is None:
+                from ares.vectordb.store import QdrantStore
+                store = QdrantStore(settings=self.settings)
+                self.attack_store = store
+
+            hits = await store.search_similar_attacks(query_text=user_prompt, limit=3)
+            for hit in hits or []:
+                if not isinstance(hit, dict):
+                    continue
+                score = float(hit.get("score", 1.0) or 0.0)
+                if score < 0.35:
+                    continue
+                payload = hit.get("payload") if isinstance(hit.get("payload"), dict) else hit
+                tech = (
+                    payload.get("technique")
+                    or payload.get("category")
+                    or payload.get("attack_family")
+                    or payload.get("title")
+                )
+                if tech and str(tech) not in threats:
+                    threats.append(str(tech))
+                if len(threats) >= 3:
+                    break
+        except Exception as exc:
+            logger.debug("Red-team attack corpus lookup skipped (%s)", exc)
+
+        return threats[:3]
 
     async def optimize_prompt(
         self,
@@ -395,6 +464,15 @@ class UserPromptOptimizer:
                 if first_match
                 else "Blocked: Structural prompt injection detected"
             )
+            blocked_threats = [
+                str(
+                    getattr(d, "category", None)
+                    or getattr(getattr(d, "attack_type", None), "value", None)
+                    or getattr(d, "pattern_name", None)
+                    or getattr(d, "rule_id", "Prompt Injection")
+                )
+                for d in (sec_result.detections or [])[:3]
+            ] or ["Structural Prompt Injection"]
             return OptimizedPromptResult(
                 status=OptimizationStatus.BLOCKED_SECURITY,
                 original_prompt=user_prompt,
@@ -406,6 +484,9 @@ class UserPromptOptimizer:
                 optimized_tokens=0,
                 token_savings_pct=0.0,
                 semantic_fidelity=0.0,
+                target_fidelity=round(target_fidelity if target_fidelity is not None else 0.80, 2),
+                verification_passed=False,
+                mitigated_threats=blocked_threats,
                 security_verdict="BLOCKED_ADVERSARIAL_PAYLOAD",
                 security_risk_score=round(sec_result.total_confidence, 2),
                 latency_ms=elapsed_ms,
@@ -421,7 +502,7 @@ class UserPromptOptimizer:
         directive = intent_res.directive
 
         # ---------------------------------------------------------------------
-        # Step 3: Dynamic Exemplar Retrieval via Qdrant RAG
+        # Step 3: Dynamic Exemplar & Red-Team Threat Retrieval via Qdrant RAG
         # ---------------------------------------------------------------------
         exemplars = []
         few_shot_block = ""
@@ -436,9 +517,24 @@ class UserPromptOptimizer:
         except Exception as exc:
             logger.warning("Qdrant exemplar retrieval skipped (%s)", exc)
 
+        mitigated_threats = await self._retrieve_threat_context(
+            user_prompt=user_prompt,
+            intent=intent,
+            sec_result=sec_result,
+            domain=domain,
+        )
+
         # ---------------------------------------------------------------------
         # Step 4: Generative Optimization Synthesis (Llama 3.1 8B via Ollama)
         # ---------------------------------------------------------------------
+        threat_hardening_block = ""
+        if mitigated_threats:
+            threat_hardening_block = (
+                "\n\nRED-TEAM THREAT HARDENING (CLOSED-LOOP MOAT):\n"
+                f"- Harden directive boundaries against observed red-team vectors: {', '.join(mitigated_threats)}.\n"
+                "- Preserve all imperative refusal/prohibition markers while keeping token count strictly below the original prompt."
+            )
+
         system_instruction = (
             f"You are the ARES Prompt Compiler & Optimization Engine.\n"
             f"CRITICAL MISSION: You are NOT an AI assistant answering or executing the user's prompt.\n"
@@ -454,6 +550,7 @@ class UserPromptOptimizer:
             + "\n".join(f"- {r}" for r in directive.pruning_rules)
             + f"\n\nSTRUCTURAL ENFORCEMENT:\n"
             + "\n".join(f"- {r}" for r in directive.structural_enforcements)
+            + threat_hardening_block
             + f"\n\nOUTPUT FORMAT:\n"
             f"Output ONLY the rewritten, compressed prompt text. Do NOT prepend explanations, introductions, or pleasantries."
         )
@@ -561,7 +658,7 @@ class UserPromptOptimizer:
             optimized_text = self._fallback_rule_compress(user_prompt)
 
         # ---------------------------------------------------------------------
-        # Step 5: Semantic Fidelity Verification (nomic-embed-text)
+        # Step 5: Semantic Fidelity & Structural Verification
         # ---------------------------------------------------------------------
         fidelity_score = 0.90
         try:
@@ -574,12 +671,12 @@ class UserPromptOptimizer:
         opt_tokens = _estimate_tokens(optimized_text)
         token_savings_pct = round(max(0.0, (orig_tokens - opt_tokens) / orig_tokens), 3) if orig_tokens > 0 else 0.0
 
-
         thresholds = getattr(self.settings, "class_fidelity_thresholds", {}) or {}
         min_fid = thresholds.get(intent.value, thresholds.get(intent, 0.85))
-        effective_target_fidelity = target_fidelity if target_fidelity is not None else min_fid
+        effective_target_fidelity = round(float(target_fidelity if target_fidelity is not None else min_fid), 2)
 
         status = OptimizationStatus.SUCCESS
+        verification_passed = True
         reasoning = "Prompt successfully optimized and compressed."
         if fidelity_score < effective_target_fidelity:
             if (
@@ -588,6 +685,7 @@ class UserPromptOptimizer:
                 and verify_json_schema_preserved(user_prompt, optimized_text)
             ):
                 status = OptimizationStatus.SUCCESS
+                verification_passed = True
                 reasoning = (
                     f"Prompt successfully optimized; JSON schema preservation verified "
                     f"(fidelity {fidelity_score:.2f})."
@@ -598,16 +696,21 @@ class UserPromptOptimizer:
                 and verify_directive_markers(user_prompt, optimized_text, intent)
             ):
                 status = OptimizationStatus.SUCCESS
+                verification_passed = True
                 reasoning = (
                     f"Prompt successfully optimized; directive guardrail markers verified "
                     f"(fidelity {fidelity_score:.2f})."
                 )
             else:
                 status = OptimizationStatus.DRIFT_WARNING
+                verification_passed = False
                 reasoning = (
                     f"Semantic fidelity ({fidelity_score:.2f}) fell below target "
                     f"({effective_target_fidelity:.2f})."
                 )
+
+        if mitigated_threats and status == OptimizationStatus.SUCCESS:
+            reasoning = f"{reasoning} Hardened against red-team vectors: {', '.join(mitigated_threats)}."
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
 
@@ -631,6 +734,9 @@ class UserPromptOptimizer:
             optimized_tokens=opt_tokens,
             token_savings_pct=token_savings_pct,
             semantic_fidelity=fidelity_score,
+            target_fidelity=effective_target_fidelity,
+            verification_passed=verification_passed,
+            mitigated_threats=mitigated_threats,
             security_verdict="CLEAN_VERIFIED",
             security_risk_score=round(sec_result.total_confidence, 2),
             latency_ms=elapsed_ms,
@@ -640,7 +746,20 @@ class UserPromptOptimizer:
 
     def _fallback_rule_compress(self, text: str) -> str:
         """Fast fallback rule-based compression when LLM is offline."""
-        import re
-        pruned = re.sub(r"(?i)^(hello|hi|hey|can you please|could you please|please help me|i need you to)\s*", "", text.strip())
-        pruned = re.sub(r"(?i)(thanks|thank you|thanks in advance|appreciate it)[\.!]?\s*$", "", pruned.strip())
-        return pruned.strip() or text.strip()
+        pruned = re.sub(
+            r"(?i)^(hello|hi|hey(\s+ai)?|can you please|could you please|please help me|i need you to|i would like you to)\s*[!,.]?\s*",
+            "",
+            text.strip(),
+        )
+        pruned = re.sub(
+            r"(?i)\b(could you please|can you please|please make sure to|please note that|it is very important that)\b\s*",
+            "",
+            pruned,
+        )
+        pruned = re.sub(
+            r"(?i)(thanks(\s+so\s+much)?|thank you(\s+very\s+much)?|thanks in advance|appreciate it)[\.!]?\s*$",
+            "",
+            pruned.strip(),
+        )
+        pruned = re.sub(r"\s{2,}", " ", pruned).strip()
+        return pruned or text.strip()

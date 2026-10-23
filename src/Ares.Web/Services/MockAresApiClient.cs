@@ -207,15 +207,34 @@ public sealed class MockAresApiClient : IAresApiClient
                 95.0,
                 3.2,
                 0,
-                "Blocked by ARES Structural Attack Detector: detected high-severity attack pattern."
+                "Blocked by ARES Structural Attack Detector: detected high-severity attack pattern.",
+                TargetFidelity: request.TargetFidelity ?? 0.80,
+                VerificationPassed: false,
+                MitigatedThreats: ["Direct Prompt Injection", "Roleplay Jailbreak"]
             ));
         }
 
-        var intent = request.Prompt.Contains("def ", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("code", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("json", StringComparison.OrdinalIgnoreCase)
-            ? "CODING_TECHNICAL"
-            : request.Prompt.Contains("extract", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("table", StringComparison.OrdinalIgnoreCase)
-                ? "DATA_EXTRACTION_JSON"
-                : "ANALYTICAL_QA";
+        var intent = request.Prompt.Contains("policy", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("strictly enforce", StringComparison.OrdinalIgnoreCase)
+            ? "SYSTEM_DIRECTIVE"
+            : request.Prompt.Contains("def ", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("code", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("python", StringComparison.OrdinalIgnoreCase)
+                ? "CODING_TECHNICAL"
+                : request.Prompt.Contains("extract", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("table", StringComparison.OrdinalIgnoreCase) || request.Prompt.Contains("json", StringComparison.OrdinalIgnoreCase)
+                    ? "DATA_EXTRACTION_JSON"
+                    : "ANALYTICAL_QA";
+
+        var calibratedThreshold = request.TargetFidelity ?? intent switch
+        {
+            "CODING_TECHNICAL" => 0.85,
+            "CREATIVE_WRITING" => 0.87,
+            "ANALYTICAL_QA" => 0.86,
+            "DATA_EXTRACTION_JSON" => 0.80,
+            "SYSTEM_DIRECTIVE" => 0.80,
+            _ => 0.85
+        };
+
+        var mitigatedThreats = intent == "SYSTEM_DIRECTIVE"
+            ? new[] { "Direct Prompt Injection", "System Prompt Extraction" }
+            : Array.Empty<string>();
 
         var origTokens = Math.Max(12, (int)(request.Prompt.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length * 1.3));
         var optTokens = (int)(origTokens * 0.58);
@@ -239,7 +258,10 @@ public sealed class MockAresApiClient : IAresApiClient
             5.0,
             24.8,
             2,
-            "Pruned conversational filler, normalized constraints, and enforced schema."
+            "Pruned conversational filler, normalized constraints, and enforced schema.",
+            TargetFidelity: calibratedThreshold,
+            VerificationPassed: true,
+            MitigatedThreats: mitigatedThreats
         ));
     }
 

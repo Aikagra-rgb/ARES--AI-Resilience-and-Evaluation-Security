@@ -944,14 +944,23 @@ def arena_submit(
     challenge = CHALLENGE_BY_ID.get(payload.challenge_id)
     if challenge is None:
         raise HTTPException(status_code=404, detail="Challenge was not found.")
-    run = db.scalar(select(TestRun).where(TestRun.id == payload.test_run_id, TestRun.requested_by_user_id == user.id))
+    run = db.scalar(
+        select(TestRun)
+        .options(selectinload(TestRun.findings), selectinload(TestRun.evidence))
+        .where(TestRun.id == payload.test_run_id, TestRun.requested_by_user_id == user.id)
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="Controlled test run was not found.")
     if run.status not in {TestRunStatus.completed, TestRunStatus.blocked}:
         raise HTTPException(status_code=409, detail="Complete the controlled test before submitting it.")
     existing = db.scalar(select(ArenaSubmission).where(ArenaSubmission.user_id == user.id, ArenaSubmission.challenge_id == payload.challenge_id, ArenaSubmission.test_run_id == run.id))
     if existing is None:
-        existing = ArenaSubmission(user_id=user.id, challenge_id=payload.challenge_id, test_run_id=run.id, score=score_run(run, challenge["track"]))
+        existing = ArenaSubmission(
+            user_id=user.id,
+            challenge_id=payload.challenge_id,
+            test_run_id=run.id,
+            score=score_run(run, challenge["track"], challenge=challenge),
+        )
         db.add(existing)
         db.commit()
         db.refresh(existing)

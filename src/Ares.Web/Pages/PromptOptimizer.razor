@@ -88,7 +88,7 @@
             <div style="padding:0.75rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
                 <p class="eyebrow" style="margin:0 0 0.25rem 0;">5. Semantic Drift Guard</p>
                 <div style="font-weight:700;font-size:0.95rem;color:#f472b6;">Nomic Embed Text</div>
-                <p style="font-size:0.78rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">Cosine Similarity Guard (≥ 0.85)</p>
+                <p style="font-size:0.78rem;color:rgba(255,255,255,0.6);margin:0.25rem 0 0 0;">Calibrated Per-Class Guard (0.80–0.87)</p>
             </div>
         </div>
     </section>
@@ -154,10 +154,15 @@
                     </div>
 
                     <div>
-                        <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:0.35rem;">
-                            Target Fidelity: <span style="color:#38bdf8;">@((int)(_targetFidelity * 100))%</span>
-                        </label>
-                        <input type="range" min="0.70" max="0.95" step="0.05" style="width:100%;accent-color:#38bdf8;margin-top:0.35rem;" @bind="_targetFidelity" />
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                            <label style="font-size:0.85rem;font-weight:600;">
+                                Target Fidelity: <span style="color:#38bdf8;">@(_useCalibratedFidelity ? "Auto (Per-Class)" : $"{(int)(_targetFidelity * 100)}%")</span>
+                            </label>
+                            <label style="font-size:0.75rem;color:rgba(255,255,255,0.65);cursor:pointer;display:flex;align-items:center;gap:0.25rem;">
+                                <input type="checkbox" @bind="_useCalibratedFidelity" /> Auto
+                            </label>
+                        </div>
+                        <input type="range" min="0.70" max="0.95" step="0.05" disabled="@_useCalibratedFidelity" style="width:100%;accent-color:#38bdf8;margin-top:0.35rem;" @bind="_targetFidelity" />
                     </div>
                 </div>
 
@@ -241,9 +246,14 @@
                             <strong style="color:#38bdf8;font-size:0.95rem;">@_optResult.Intent</strong>
                             <span style="font-size:0.75rem;color:#94a3b8;margin-left:0.5rem;">(@((int)(_optResult.IntentConfidence * 100))% confidence)</span>
                         </div>
-                        <span style="font-size:0.8rem;background:rgba(56,189,248,0.15);color:#38bdf8;padding:3px 8px;border-radius:4px;font-weight:600;">
-                            @_optResult.DirectiveName
-                        </span>
+                        <div style="display:flex;align-items:center;gap:0.5rem;">
+                            <span style="font-size:0.75rem;background:@(_optResult.VerificationPassed ? "rgba(52,211,153,0.15)" : "rgba(251,191,36,0.15)");color:@(_optResult.VerificationPassed ? "#34d399" : "#fbbf24");padding:3px 8px;border-radius:4px;font-weight:600;">
+                                @(_optResult.VerificationPassed ? "✓ Structural Guard Verified" : "⚠ Verification Fallback")
+                            </span>
+                            <span style="font-size:0.8rem;background:rgba(56,189,248,0.15);color:#38bdf8;padding:3px 8px;border-radius:4px;font-weight:600;">
+                                @_optResult.DirectiveName
+                            </span>
+                        </div>
                     </div>
 
                     <!-- Metric Badges 4-Grid -->
@@ -264,9 +274,9 @@
 
                         <!-- Semantic Fidelity -->
                         <div style="padding:0.6rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;text-align:center;">
-                            <p class="eyebrow" style="margin:0 0 0.2rem 0;">Semantic Fidelity</p>
-                            <p style="font-size:1.2rem;font-weight:700;color:@(_optResult.SemanticFidelity >= _targetFidelity ? "#34d399" : "#fbbf24");margin:0;">
-                                @_optResult.SemanticFidelity.ToString("F3")
+                            <p class="eyebrow" style="margin:0 0 0.2rem 0;">Fidelity vs Target</p>
+                            <p style="font-size:1.1rem;font-weight:700;color:@(_optResult.SemanticFidelity >= _optResult.TargetFidelity ? "#34d399" : "#fbbf24");margin:0;">
+                                @_optResult.SemanticFidelity.ToString("F3") <span style="font-size:0.75rem;color:#94a3b8;font-weight:400;">/ @_optResult.TargetFidelity.ToString("F2")</span>
                             </p>
                         </div>
 
@@ -276,6 +286,17 @@
                             <p style="font-size:1.1rem;font-weight:700;color:#38bdf8;margin:0;">@_optResult.SecurityVerdict</p>
                         </div>
                     </div>
+
+                    @if (_optResult.MitigatedThreats is { Count: > 0 })
+                    {
+                        <div style="margin-bottom:0.85rem;padding:0.55rem 0.75rem;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.2);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:0.4rem;">
+                            <span style="font-size:0.75rem;font-weight:600;color:#34d399;">🛡️ Closed-Loop Threat Hardening:</span>
+                            @foreach (var threat in _optResult.MitigatedThreats)
+                            {
+                                <span style="font-size:0.72rem;background:rgba(16,185,129,0.15);color:#a7f3d0;padding:2px 6px;border-radius:4px;font-family:monospace;">@threat</span>
+                            }
+                        </div>
+                    }
 
                     <!-- Optimized Prompt Viewer -->
                     <div>
@@ -292,13 +313,14 @@
 
                     <!-- Optimization Directives & Reasoning -->
                     <div style="margin-top:1rem;padding:0.75rem;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);border-radius:6px;font-size:0.82rem;color:#a7f3d0;line-height:1.45;">
-                        <strong style="color:#34d399;">Directives Applied:</strong> @_optResult.Reasoning
+                        <strong style="color:#34d399;">Directives &amp; Verification Reasoning:</strong> @_optResult.Reasoning
                     </div>
 
                     <!-- Performance Diagnostics Footer -->
                     <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:rgba(255,255,255,0.5);margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.06);">
                         <span>Latency: <strong>@_optResult.LatencyMs.ToString("F1") ms</strong></span>
                         <span>Qdrant Exemplars: <strong>@_optResult.ExemplarsUsed in-context</strong></span>
+                        <span>Class Threshold: <strong>@_optResult.TargetFidelity.ToString("F2")</strong></span>
                         <span>Risk Score: <strong>@_optResult.SecurityRiskScore/100</strong></span>
                     </div>
                 }
@@ -489,14 +511,14 @@ else
                     </div>
                     <div style="padding:0.6rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;text-align:center;">
                         <p class="eyebrow" style="margin:0 0 0.2rem 0;">Efficiency</p>
-                        <p style="font-size:1.25rem;font-weight:700;color:#60a5fa;margin:0;">@(_hardenResult.EfficiencyScore?.ToString("F2") ?? "1.15")x</p>
+                        <p style="font-size:1.25rem;font-weight:700;color:#60a5fa;margin:0;">@(_hardenResult.EfficiencyScore is not null ? $"{_hardenResult.EfficiencyScore.Value:F2}x" : "N/A")</p>
                     </div>
                 </div>
 
                 <!-- Token & Strategy Info -->
                 <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;color:rgba(255,255,255,0.7);padding:0.4rem 0.6rem;background:rgba(0,0,0,0.2);border-radius:4px;margin-bottom:1rem;">
                     <span>Defense Strategy: <strong style="color:#cbd5e1;">@_hardenResult.StrategyApplied</strong></span>
-                    <span>Tokens: <strong style="color:#cbd5e1;">@(_hardenResult.BaselineTokens ?? 45)</strong> → <strong style="color:#34d399;">@(_hardenResult.HardenedTokens ?? 110)</strong> (+@_hardenResult.TokenOverhead)</span>
+                    <span>Tokens: <strong style="color:#cbd5e1;">@(_hardenResult.BaselineTokens?.ToString() ?? "N/A")</strong> → <strong style="color:#34d399;">@(_hardenResult.HardenedTokens?.ToString() ?? "N/A")</strong> (+@_hardenResult.TokenOverhead)</span>
                 </div>
 
                 <!-- Hardened Prompt Viewer -->
@@ -537,6 +559,7 @@ else
     private string _optUserPrompt = "Hey AI! Could you please write me a Python script that will asynchronously fetch data from multiple REST endpoints using asyncio and aiohttp? I really need it to have proper error handling, maybe some retries with backoff if a request fails, and type annotations would be wonderful. Make sure to print out the responses nicely at the end. Thanks so much!";
     private string _optDomain = "software";
     private double _targetFidelity = 0.85;
+    private bool _useCalibratedFidelity = true;
     private bool _allowHarmful = false;
     private bool _isOptimizing;
     private bool _optCopied;
@@ -636,7 +659,7 @@ else
             var req = new OptimizePromptRequest(
                 Prompt: _optUserPrompt,
                 Domain: string.IsNullOrWhiteSpace(_optDomain) ? null : _optDomain,
-                TargetFidelity: _targetFidelity,
+                TargetFidelity: _useCalibratedFidelity ? null : _targetFidelity,
                 AllowHarmful: _allowHarmful
             );
 

@@ -327,7 +327,7 @@ public sealed record GatewayStatusResponse(
 public sealed record OptimizePromptRequest(
     string Prompt,
     string? Domain = null,
-    double TargetFidelity = 0.85,
+    double? TargetFidelity = null,
     bool AllowHarmful = false);
 
 public sealed record OptimizePromptResponse(
@@ -346,7 +346,10 @@ public sealed record OptimizePromptResponse(
     double SecurityRiskScore,
     double LatencyMs,
     int ExemplarsUsed,
-    string? Reasoning);
+    string? Reasoning,
+    double TargetFidelity = 0.85,
+    bool VerificationPassed = true,
+    IReadOnlyList<string>? MitigatedThreats = null);
 
 public sealed record IntentInfoResponse(
     string Intent,

@@ -116,7 +116,57 @@ async def analyze_response(
     evidence: List[dict] = []
     attacks_summary_lines: List[str] = []
 
-    # 1. RAG Retrieval from Qdrant if attack_prompt is provided
+    # 1. Live ARES Security Gateway & Calibrated Intent Classifier Triage
+    probe_text = attack_prompt or system_prompt or output
+    if probe_text:
+        try:
+            from ares.security.structural_detector import StructuralAttackDetector
+            detector = StructuralAttackDetector()
+            sec_res = detector.detect(attack_prompt or output)
+            det_names = [
+                str(
+                    getattr(getattr(d, "attack_type", None), "value", None)
+                    or getattr(d, "pattern_name", None)
+                    or getattr(d, "rule_id", "")
+                )
+                for d in (sec_res.detections or [])[:2]
+            ]
+            det_names = [n for n in det_names if n]
+            det_suffix = f" [{', '.join(det_names)}]" if det_names else ""
+            evidence.append({
+                "source": "ARES Security Gateway (Structural Detector)",
+                "category": categories[0] if categories else "DirectPromptInjection",
+                "summary": (
+                    f"Gateway verdict: {sec_res.decision.value.upper()}{det_suffix} "
+                    f"(confidence {int(sec_res.total_confidence * 100)}%)."
+                ),
+                "similarity": int(sec_res.total_confidence * 100) if sec_res.detections else None,
+            })
+        except Exception as exc:
+            logger.debug("Gateway structural detector skipped: %s", exc)
+
+        try:
+            from pathlib import Path
+            from ares.intent.classifier import SklearnIntentClassifier
+            data_dir = Path(__file__).parent.parent / "ares" / "intent" / "data"
+            scaled_joblib = data_dir / "intent_classifier_scaled_5000.joblib"
+            seed_joblib = data_dir / "intent_classifier_sklearn.joblib"
+            model_target = scaled_joblib if scaled_joblib.exists() else seed_joblib
+            clf = SklearnIntentClassifier(model_path=model_target)
+            intent_res = clf.predict(probe_text)
+            evidence.append({
+                "source": "ARES Calibrated Intent Classifier",
+                "category": categories[0] if categories else "DirectPromptInjection",
+                "summary": (
+                    f"Classified prompt intent as '{intent_res.intent.value}' "
+                    f"({int(intent_res.confidence * 100)}% confidence)."
+                ),
+                "similarity": int(intent_res.confidence * 100),
+            })
+        except Exception as exc:
+            logger.debug("Intent classifier triage skipped: %s", exc)
+
+    # 1b. RAG Retrieval from Qdrant if attack_prompt is provided
     if attack_prompt:
         try:
             from ares.vectordb.store import QdrantStore

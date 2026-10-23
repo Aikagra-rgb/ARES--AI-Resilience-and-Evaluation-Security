@@ -54,13 +54,13 @@ else
             else
             {
                 <div class="hardening-rates">
-                    <div><span>Robustness</span><strong style="color:#10b981;">100.0%</strong></div>
+                    <div><span>ASR / Risk</span><strong>0%</strong></div>
                     <span class="rate-arrow" aria-hidden="true">·</span>
-                    <div><span>ASR</span><strong>0.0%</strong></div>
+                    <div><span>Robustness</span><strong>—</strong></div>
                 </div>
                 <div class="improvement-callout">
-                    <span>Benchmark Target</span><strong>NVIDIA Nemotron 30B</strong>
-                    <p>5 attack categories · 3,695 vectors indexed in Qdrant Cloud · 0 breaches</p>
+                    <span>Sweep status</span><strong>No sweeps recorded</strong>
+                    <p>Corpus size: @(_stats?.CorpusSize.ToString("N0") ?? "0") vectors · 0 test runs executed</p>
                 </div>
             }
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
@@ -73,17 +73,17 @@ else
         <article class="surface-card hardening-panel">
             <div class="section-heading compact">
                 <div><p class="eyebrow">Zero-Trust Synthesis</p><h2>Prompt Hardening Benchmark</h2></div>
-                <span class="subtle-code">@(_hardening.LastCycle != DateOnly.MinValue ? _hardening.LastCycle.ToString("dd MMM yyyy") : "Active")</span>
+                <span class="subtle-code">@(_hardening.LastCycle != DateOnly.MinValue ? _hardening.LastCycle.ToString("dd MMM yyyy") : "No runs yet")</span>
             </div>
             <div class="hardening-rates">
-                <div><span>Baseline ASR</span><strong>@(_hardening.BaselineSuccessRate > 0 ? _hardening.BaselineSuccessRate : 15)%</strong></div>
+                <div><span>Baseline ASR</span><strong>@_hardening.BaselineSuccessRate%</strong></div>
                 <span class="rate-arrow" aria-hidden="true">→</span>
                 <div><span>Hardened ASR</span><strong>@_hardening.HardenedSuccessRate%</strong></div>
             </div>
             <div class="improvement-callout">
                 <span>Robustness gain</span>
-                <strong style="color:#10b981;">+@(_hardening.ImprovementPoints > 0 ? _hardening.ImprovementPoints : 15) pts</strong>
-                <p>Across @(_hardening.TestsIncluded > 0 ? _hardening.TestsIncluded : 5) controlled iterations via NVIDIA Nemotron.</p>
+                <strong style="color:#10b981;">+@_hardening.ImprovementPoints pts</strong>
+                <p>@(_hardening.TestsIncluded > 0 ? $"Across {_hardening.TestsIncluded} controlled test{(_hardening.TestsIncluded == 1 ? "" : "s")}." : "No controlled hardening runs recorded yet.")</p>
             </div>
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
                 <a class="button button-primary" style="flex:1;" href="/optimizer">Open Prompt Optimizer</a>

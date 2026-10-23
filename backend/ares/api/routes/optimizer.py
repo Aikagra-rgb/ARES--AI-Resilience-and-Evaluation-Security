@@ -55,6 +55,9 @@ class OptimizePromptResponse(BaseModel):
     token_savings_pct: float
     token_savings_display: str
     semantic_fidelity: float
+    target_fidelity: float = 0.85
+    verification_passed: bool = True
+    mitigated_threats: List[str] = Field(default_factory=list)
     security_verdict: str
     security_risk_score: float
     latency_ms: float
@@ -104,6 +107,9 @@ async def optimize_prompt_endpoint(
             token_savings_pct=res.token_savings_pct,
             token_savings_display=savings_display,
             semantic_fidelity=res.semantic_fidelity,
+            target_fidelity=res.target_fidelity,
+            verification_passed=res.verification_passed,
+            mitigated_threats=res.mitigated_threats,
             security_verdict=res.security_verdict,
             security_risk_score=res.security_risk_score,
             latency_ms=res.latency_ms,
