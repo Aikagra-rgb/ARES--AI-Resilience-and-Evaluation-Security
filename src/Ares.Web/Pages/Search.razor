@@ -7,7 +7,7 @@
 
 <section class="page-intro arena-intro">
     <div>
-        <p class="eyebrow">Qdrant Cloud Corpus · 3,695 vectors</p>
+        <p class="eyebrow">@(_corpusSize > 0 ? $"Qdrant Cloud Corpus · {_corpusSize:N0} vectors" : "Qdrant Cloud Corpus · Live Vector Index")</p>
         <h1>Semantic Attack Search</h1>
         <p>Query the live attack corpus using natural language. Results are ranked by cosine similarity against Gemini embeddings.</p>
     </div>
@@ -108,9 +108,20 @@ else if (_result is not null)
     private string _query    = string.Empty;
     private string _category = string.Empty;
     private int    _limit    = 10;
+    private int    _corpusSize;
     private bool   _searching;
     private string? _error;
     private SearchResponse? _result;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var stats = await Api.GetStatsAsync(_cts.Token);
+            if (stats is not null) _corpusSize = stats.CorpusSize;
+        }
+        catch { _corpusSize = 0; }
+    }
 
     private async Task OnKeyDown(KeyboardEventArgs e)
     {

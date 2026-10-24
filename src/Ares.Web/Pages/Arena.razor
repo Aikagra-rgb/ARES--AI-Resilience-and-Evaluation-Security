@@ -53,7 +53,7 @@ else
             {
                 <RiskSummary Analysis="_run.Analysis" />
                 <div class="analysis-detail-grid">
-                    <article class="analysis-card"><p class="eyebrow">Runtime classification</p><h3>@_run.Analysis.RuntimeClassification</h3><p>Security analysis is separate from model output and applies the configured mock runtime rules.</p></article>
+                    <article class="analysis-card"><p class="eyebrow">Runtime classification</p><h3>@_run.Analysis.RuntimeClassification</h3><p>Security analysis is separate from model output and applies the ARES Security Gateway, Calibrated Intent Classifier, and Qdrant RAG evaluation rules.</p></article>
                     <article class="analysis-card"><p class="eyebrow">Recommended prompt change</p><h3>@_run.Analysis.Hardening?.Summary</h3><p>@_run.Analysis.Hardening?.RecommendedChange</p></article>
                 </div>
             }

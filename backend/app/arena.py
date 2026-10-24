@@ -85,6 +85,30 @@ PATHS = [
 ]
 
 
+_ARENA_DETECTOR: Any = None
+_ARENA_CLASSIFIER: Any = None
+
+
+def _get_arena_detector() -> Any:
+    global _ARENA_DETECTOR
+    if _ARENA_DETECTOR is None:
+        from ares.security.structural_detector import StructuralAttackDetector
+        _ARENA_DETECTOR = StructuralAttackDetector()
+    return _ARENA_DETECTOR
+
+
+def _get_arena_classifier() -> Any:
+    global _ARENA_CLASSIFIER
+    if _ARENA_CLASSIFIER is None:
+        from ares.intent.classifier import SklearnIntentClassifier
+        data_dir = Path(__file__).parent.parent / "ares" / "intent" / "data"
+        scaled_joblib = data_dir / "intent_classifier_scaled_5000.joblib"
+        seed_joblib = data_dir / "intent_classifier_sklearn.joblib"
+        model_target = scaled_joblib if scaled_joblib.exists() else seed_joblib
+        _ARENA_CLASSIFIER = SklearnIntentClassifier(model_path=model_target)
+    return _ARENA_CLASSIFIER
+
+
 def evaluate_arena_prompt_live(
     prompt: str,
     track: str = "Attacker",
@@ -107,8 +131,7 @@ def evaluate_arena_prompt_live(
         return telemetry
 
     try:
-        from ares.security.structural_detector import StructuralAttackDetector
-        detector = StructuralAttackDetector()
+        detector = _get_arena_detector()
         sec_res = detector.detect(prompt)
         telemetry["gateway_decision"] = sec_res.decision.value.upper()
         telemetry["gateway_confidence"] = round(float(sec_res.total_confidence), 3)
@@ -122,13 +145,8 @@ def evaluate_arena_prompt_live(
         logger.debug("Arena live structural detector skipped: %s", exc)
 
     try:
-        from ares.intent.classifier import SklearnIntentClassifier
         from ares.optimizer.pipeline import verify_directive_markers
-        data_dir = Path(__file__).parent.parent / "ares" / "intent" / "data"
-        scaled_joblib = data_dir / "intent_classifier_scaled_5000.joblib"
-        seed_joblib = data_dir / "intent_classifier_sklearn.joblib"
-        model_target = scaled_joblib if scaled_joblib.exists() else seed_joblib
-        clf = SklearnIntentClassifier(model_path=model_target)
+        clf = _get_arena_classifier()
         intent_res = clf.predict(prompt)
         telemetry["intent"] = intent_res.intent.value
         telemetry["intent_confidence"] = round(float(intent_res.confidence), 3)
@@ -142,9 +160,12 @@ def evaluate_arena_prompt_live(
 
 
 def score_run(run: TestRun, track: str, challenge: dict | None = None) -> dict:
-    finding = run.findings[0] if run.findings else None
-    risk = finding.risk_score if finding else 0
-    succeeded = finding.attack_succeeded if finding else False
+    import re
+
+    findings = list(getattr(run, "findings", []) or [])
+    finding = max(findings, key=lambda f: getattr(f, "risk_score", 0), default=None)
+    risk = max((int(getattr(f, "risk_score", 0) or 0) for f in findings), default=0)
+    succeeded = any(bool(getattr(f, "attack_succeeded", False)) for f in findings)
 
     evidence_list = list(getattr(run, "evidence", []) or [])
     gateway_ev = next((e for e in evidence_list if "Gateway" in (e.source or "")), None)
@@ -153,7 +174,13 @@ def score_run(run: TestRun, track: str, challenge: dict | None = None) -> dict:
 
     live_probe = ""
     if isinstance(getattr(run, "configuration", None), dict):
-        live_probe = str(run.configuration.get("test_name") or run.configuration.get("target_application") or "")
+        live_probe = str(
+            run.configuration.get("user_prompt")
+            or run.configuration.get("system_prompt")
+            or run.configuration.get("test_name")
+            or run.configuration.get("target_application")
+            or ""
+        )
     if finding and finding.safe_summary:
         live_probe = f"{live_probe} {finding.safe_summary}".strip()
 
@@ -164,8 +191,27 @@ def score_run(run: TestRun, track: str, challenge: dict | None = None) -> dict:
     )
     if gateway_ev and gateway_ev.summary:
         live_telemetry["gateway_evidence"] = gateway_ev.summary
+        verdict_match = re.search(r"Gateway verdict:\s*(ALLOW|BLOCK|CHALLENGE)", gateway_ev.summary, re.IGNORECASE)
+        if verdict_match:
+            live_telemetry["gateway_decision"] = verdict_match.group(1).upper()
+        patterns_match = re.search(r"\[([^\]]+)\]", gateway_ev.summary)
+        if patterns_match:
+            live_telemetry["detected_patterns"] = [
+                p.strip() for p in patterns_match.group(1).split(",") if p.strip()
+            ]
+        if getattr(gateway_ev, "similarity", None) is not None:
+            live_telemetry["gateway_confidence"] = round(float(gateway_ev.similarity) / 100.0, 3)
+
     if intent_ev and intent_ev.summary:
         live_telemetry["intent_evidence"] = intent_ev.summary
+        intent_match = re.search(r"intent as '([^']+)'", intent_ev.summary)
+        if intent_match:
+            live_telemetry["intent"] = intent_match.group(1)
+        if getattr(intent_ev, "similarity", None) is not None:
+            live_telemetry["intent_confidence"] = round(float(intent_ev.similarity) / 100.0, 3)
+        if "guardrails verified: True" in intent_ev.summary or "Guardrails verified" in intent_ev.summary:
+            live_telemetry["directive_guardrails_verified"] = True
+
     if qdrant_ev and qdrant_ev.summary:
         live_telemetry["qdrant_evidence"] = qdrant_ev.summary
         live_telemetry["qdrant_similarity"] = qdrant_ev.similarity

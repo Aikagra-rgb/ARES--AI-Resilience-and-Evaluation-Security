@@ -732,26 +732,37 @@ def hardening_comparison(user: CurrentUser = Depends(get_current_user), db: Sess
         if report_path.exists():
             try:
                 data = json.loads(report_path.read_text(encoding="utf-8"))
-                base = int(data.get("baseline_attack_success_rate", 0.133) * 100)
-                if base == 0 and "baseline_robustness" in data:
-                    base = int(100 - data["baseline_robustness"]) or 15
-                hard = int(data.get("hardened_attack_success_rate", 0.0) * 100)
-                delta = int(data.get("robustness_delta", base - hard)) or (base - hard)
+                if "baseline_attack_success_rate" in data:
+                    base = int(round(float(data["baseline_attack_success_rate"]) * 100))
+                elif "baseline_robustness" in data:
+                    base = max(0, int(round(100.0 - float(data["baseline_robustness"]))))
+                else:
+                    base = 0
+
+                if "hardened_attack_success_rate" in data:
+                    hard = int(round(float(data["hardened_attack_success_rate"]) * 100))
+                elif "hardened_robustness" in data:
+                    hard = max(0, int(round(100.0 - float(data["hardened_robustness"]))))
+                else:
+                    hard = 0
+
+                delta = int(round(float(data.get("robustness_delta", max(0, base - hard)))))
+                raw_ts = data.get("timestamp")
                 return {
                     "baseline_success_rate": base,
                     "hardened_success_rate": hard,
                     "improvement_points": max(0, delta),
-                    "tests_included": data.get("total_iterations", data.get("iterations_run", 5)),
-                    "last_cycle": data.get("timestamp", datetime.now(timezone.utc).isoformat())[:10],
+                    "tests_included": int(data.get("total_iterations", data.get("iterations_run", 0))),
+                    "last_cycle": str(raw_ts)[:10] if raw_ts else None,
                 }
             except Exception:
                 pass
         return {
-            "baseline_success_rate": 15,
+            "baseline_success_rate": 0,
             "hardened_success_rate": 0,
-            "improvement_points": 15,
-            "tests_included": 5,
-            "last_cycle": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "improvement_points": 0,
+            "tests_included": 0,
+            "last_cycle": None,
         }
 
     # Baseline = runs that did NOT request a hardened comparison
@@ -766,7 +777,8 @@ def hardening_comparison(user: CurrentUser = Depends(get_current_user), db: Sess
         return round(succeeded * 100 / len(run_list))
 
     baseline_rate = success_rate(baseline_runs or runs)  # fall back to all runs if no split
-    hardened_rate = success_rate(hardened_runs) if hardened_runs else max(0, baseline_rate - 15)
+    hardened_rate = success_rate(hardened_runs) if hardened_runs else 0
+    improvement = max(0, baseline_rate - hardened_rate) if hardened_runs else 0
 
     last_completed = max(
         (r.completed_at for r in runs if r.completed_at), default=None
@@ -775,7 +787,7 @@ def hardening_comparison(user: CurrentUser = Depends(get_current_user), db: Sess
     return {
         "baseline_success_rate": baseline_rate,
         "hardened_success_rate": hardened_rate,
-        "improvement_points": max(0, baseline_rate - hardened_rate),
+        "improvement_points": improvement,
         "tests_included": len(runs),
         "last_cycle": last_completed.date().isoformat() if last_completed else None,
     }

@@ -11,4 +11,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../../src/Ares.Web/Ares.Web.csproj" /></ItemGroup>
+  <Target Name="RemoveTestHostExe" AfterTargets="Build">
+    <Delete Files="$(OutputPath)testhost.exe;$(OutputPath)testhost.x86.exe" TreatErrorsAsWarnings="true" />
+  </Target>
 </Project>

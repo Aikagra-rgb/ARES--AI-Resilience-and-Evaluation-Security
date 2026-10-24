@@ -297,14 +297,29 @@ async def get_recent_incidents() -> List[RuntimeIncident]:
 async def get_hardening_comparison() -> HardeningComparison:
     """Baseline vs hardened prompt comparison from saved report."""
     data = _load_json("prompt_hardening_report.json")
-    baseline = int(data.get("baseline_attack_success_rate", 0.133) * 100)
-    hardened  = int(data.get("hardened_attack_success_rate", data.get("final_attack_success_rate", 0.0)) * 100)
-    last_cycle = data.get("timestamp", _now().isoformat())[:10]
+    if "baseline_attack_success_rate" in data:
+        baseline = int(round(float(data["baseline_attack_success_rate"]) * 100))
+    elif "baseline_robustness" in data:
+        baseline = max(0, int(round(100.0 - float(data["baseline_robustness"]))))
+    else:
+        baseline = 0
+
+    if "hardened_attack_success_rate" in data or "final_attack_success_rate" in data:
+        hardened = int(round(float(data.get("hardened_attack_success_rate", data.get("final_attack_success_rate", 0.0))) * 100))
+    elif "hardened_robustness" in data:
+        hardened = max(0, int(round(100.0 - float(data["hardened_robustness"]))))
+    else:
+        hardened = 0
+
+    improvement = int(round(float(data.get("robustness_delta", max(0, baseline - hardened)))))
+    tests_included = int(data.get("total_iterations", data.get("iterations_run", 0)))
+    raw_ts = data.get("timestamp")
+    last_cycle = str(raw_ts)[:10] if raw_ts else ""
     return HardeningComparison(
         baseline_success_rate=baseline,
         hardened_success_rate=hardened,
-        improvement_points=baseline - hardened,
-        tests_included=data.get("total_iterations", 3),
+        improvement_points=max(0, improvement),
+        tests_included=tests_included,
         last_cycle=last_cycle,
     )
 

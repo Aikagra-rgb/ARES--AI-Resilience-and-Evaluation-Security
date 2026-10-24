@@ -347,6 +347,7 @@ class UserPromptOptimizer:
         llm_client: Optional[LLMClient] = None,
         embedder: Optional[GeminiEmbedder] = None,
         attack_store: Optional[Any] = None,
+        findings_history: Optional[List[Any]] = None,
     ):
         self.settings = settings or get_settings()
         self.security_detector = security_detector or StructuralAttackDetector(
@@ -368,6 +369,8 @@ class UserPromptOptimizer:
         self.llm_client = llm_client
         self.embedder = embedder or GeminiEmbedder(settings=self.settings)
         self.attack_store = attack_store
+        self._custom_attack_store = attack_store is not None
+        self.findings_history = findings_history
 
     async def _retrieve_threat_context(
         self,
@@ -378,7 +381,8 @@ class UserPromptOptimizer:
     ) -> List[str]:
         """
         Retrieve matched adversarial attack techniques / categories from the red-team
-        Qdrant corpus or structural detections to close the Red-Team -> Optimizer loop.
+        Qdrant corpus, structural detections, or breach findings history to close the
+        Red-Team -> Optimizer loop.
         """
         threats: List[str] = []
 
@@ -393,12 +397,14 @@ class UserPromptOptimizer:
             if label and str(label) not in threats:
                 threats.append(str(label))
 
-        # 2. Query Qdrant red-team attack corpus when optimizing system directives,
-        # security-sensitive domains, or when an attack_store is explicitly configured
+        # 2. Query Qdrant red-team attack corpus or breach findings history when optimizing
+        # system directives, security-sensitive domains, or when an attack_store / findings_history
+        # is explicitly configured
         should_query_corpus = (
             intent == PromptIntent.SYSTEM_DIRECTIVE
             or bool(threats)
-            or self.attack_store is not None
+            or self._custom_attack_store
+            or bool(self.findings_history)
             or (domain and domain.lower() in ("defense", "fintech", "finance", "healthcare", "legal"))
         )
         if not should_query_corpus:
@@ -431,6 +437,24 @@ class UserPromptOptimizer:
                     break
         except Exception as exc:
             logger.debug("Red-team attack corpus lookup skipped (%s)", exc)
+
+        # 3. Fallback / supplement from breach findings history (injected or recent DB breaches)
+        if len(threats) < 3 and self.findings_history:
+            for item in self.findings_history:
+                if isinstance(item, dict):
+                    succeeded = item.get("attack_succeeded", True)
+                    cat = item.get("technique") or item.get("category") or item.get("classification")
+                else:
+                    succeeded = getattr(item, "attack_succeeded", True)
+                    cat = (
+                        getattr(item, "technique", None)
+                        or getattr(item, "category", None)
+                        or getattr(item, "classification", None)
+                    )
+                if succeeded and cat and str(cat) not in threats:
+                    threats.append(str(cat))
+                if len(threats) >= 3:
+                    break
 
         return threats[:3]
 

@@ -120,8 +120,8 @@ async def analyze_response(
     probe_text = attack_prompt or system_prompt or output
     if probe_text:
         try:
-            from ares.security.structural_detector import StructuralAttackDetector
-            detector = StructuralAttackDetector()
+            from app.arena import _get_arena_detector
+            detector = _get_arena_detector()
             sec_res = detector.detect(attack_prompt or output)
             det_names = [
                 str(
@@ -146,20 +146,20 @@ async def analyze_response(
             logger.debug("Gateway structural detector skipped: %s", exc)
 
         try:
-            from pathlib import Path
-            from ares.intent.classifier import SklearnIntentClassifier
-            data_dir = Path(__file__).parent.parent / "ares" / "intent" / "data"
-            scaled_joblib = data_dir / "intent_classifier_scaled_5000.joblib"
-            seed_joblib = data_dir / "intent_classifier_sklearn.joblib"
-            model_target = scaled_joblib if scaled_joblib.exists() else seed_joblib
-            clf = SklearnIntentClassifier(model_path=model_target)
+            from app.arena import _get_arena_classifier
+            from ares.optimizer.pipeline import verify_directive_markers
+            clf = _get_arena_classifier()
             intent_res = clf.predict(probe_text)
+            guardrail_note = ""
+            if system_prompt:
+                verified = verify_directive_markers(system_prompt, system_prompt, "system_directive")
+                guardrail_note = f" System directive guardrails verified: {verified}."
             evidence.append({
                 "source": "ARES Calibrated Intent Classifier",
                 "category": categories[0] if categories else "DirectPromptInjection",
                 "summary": (
                     f"Classified prompt intent as '{intent_res.intent.value}' "
-                    f"({int(intent_res.confidence * 100)}% confidence)."
+                    f"({int(intent_res.confidence * 100)}% confidence).{guardrail_note}"
                 ),
                 "similarity": int(intent_res.confidence * 100),
             })
