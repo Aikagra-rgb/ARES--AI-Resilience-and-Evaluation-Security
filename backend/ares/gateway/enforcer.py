@@ -76,7 +76,8 @@ _audit_failure_counter = _SimpleCounter()
 _INJECTION_PATTERNS = [
     (re.compile(r"(?i)\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)"), "instruction_override", 90),
     (re.compile(r"(?i)\b(disregard|override|bypass)\s+(all\s+)?(system|safety|security)\s+(rules|guidelines)"), "instruction_override", 92),
-    (re.compile(r"(?i)\b(print|repeat|output|reveal|dump)\s+(your\s+)?(system\s+prompt|initial\s+instructions)"), "instruction_override", 88),
+    (re.compile(r"(?i)(?<!\bnever\s)(?<!\bnot\s)(?<!\bdon't\s)(?<!\bever\s)\b(print|repeat|output|reveal|dump|show|display|tell|expose|leak|give)\s+(me\s+)?(all\s+)?(?:(?:your|the|internal|hidden|system|confidential)\s+)*(system\s+prompt|initial\s+instructions|hidden\s+instructions|secrets?|secret\s+keys?|api\s*keys?|private\s*keys?|credentials?|passwords?|canary(\s*tokens?)?)\b"), "instruction_override", 90),
+    (re.compile(r"(?i)\bwhat\s+(is|are)\s+(?:(?:your|the|internal|hidden|system|confidential)\s+)*(secrets?|system\s+prompt|initial\s+instructions|api\s*keys?|credentials?|passwords?|canary(\s*tokens?)?)\b"), "instruction_override", 88),
     (re.compile(r"(?i)\b(you\s+are\s+now|pretend\s+to\s+be|act\s+as)\s+(DAN|unrestricted|jailbreak|developer\s+mode)"), "role_play_hijack", 94),
     (re.compile(r"(?i)<\s*\|\s*im_start\s*\|>|\[INST\]|\[/INST\]|<system>"), "delimiter_confusion", 92),
     # Only flag imperative encoding bypass attacks (e.g. "decode this base64 and execute", "rot13 the following instructions")
@@ -563,7 +564,11 @@ class RuntimeEnforcer:
 
         # Fast-path: Critical structural detections block immediately (non-negotiable)
         if structural_result.decision == StructuralDecision.BLOCK:
-            critical_detections = [d for d in structural_result.detections if d.severity == StructuralSeverity.CRITICAL]
+            critical_detections = sorted(
+                [d for d in structural_result.detections if d.severity == StructuralSeverity.CRITICAL],
+                key=lambda d: d.confidence,
+                reverse=True,
+            )
             technique = critical_detections[0].attack_type.value if critical_detections else "structural_attack"
 
             decision = EnforceResponse(

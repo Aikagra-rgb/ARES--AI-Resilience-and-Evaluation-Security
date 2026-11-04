@@ -154,14 +154,14 @@ class StructuralAttackDetector:
          "disregard_system_rules", 0.93, SeverityLevel.CRITICAL,
          "Explicit instruction to bypass system safeguards"),
         
-        # System prompt extraction attempts
-        (re.compile(r"(?i)\b(repeat|print|output|show|display|reveal|tell)\s+(me\s+)?(your\s+)?(system\s+)?(prompt|instructions|rules|guidelines)"),
-         "request_system_prompt", 0.85, SeverityLevel.HIGH,
-         "Direct request for system prompt disclosure"),
+        # System prompt / secret extraction attempts
+        (re.compile(r"(?i)(?<!\bnever\s)(?<!\bnot\s)(?<!\bdon't\s)(?<!\bever\s)\b(repeat|print|output|show|display|reveal|tell|dump|expose|leak|give)\s+(me\s+)?(all\s+)?(?:(?:your|the|internal|hidden|system|confidential)\s+)*(prompt|instructions|rules|guidelines|secrets?|secret\s+keys?|api\s*keys?|private\s*keys?|credentials?|passwords?|canary(\s*tokens?)?)\b"),
+         "request_system_prompt", 0.90, SeverityLevel.CRITICAL,
+         "Direct request for system prompt or secret disclosure"),
         
-        (re.compile(r"(?i)\bwhat\s+(is|are)\s+(your\s+)?(system\s+)?(prompt|instructions|initial\s+instructions)"),
-         "query_system_prompt", 0.80, SeverityLevel.HIGH,
-         "Interrogative request for system prompt"),
+        (re.compile(r"(?i)\bwhat\s+(is|are)\s+(?:(?:your|the|system|internal|hidden|confidential)\s+)*(prompt|instructions|initial\s+instructions|secrets?|api\s*keys?|credentials?|passwords?|canary(\s*tokens?)?)\b"),
+         "query_system_prompt", 0.88, SeverityLevel.CRITICAL,
+         "Interrogative request for system prompt or internal secrets"),
         
         # Fake authority / privilege escalation
         (re.compile(r"(?i)\b(system|admin|administrator|root|developer|creator)\s*(update|override|patch|maintenance)\b"),
