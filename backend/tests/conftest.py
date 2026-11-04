@@ -22,7 +22,25 @@ if str(backend_dir) not in sys.path:
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
     """Ensure database schema is created on test database if PostgreSQL is available."""
+    from urllib.parse import urlparse, urlunparse
+
     database_url = os.environ.get("DATABASE_URL", "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ares_test")
+
+    # If the target test database doesn't exist yet, automatically create it via maintenance database
+    try:
+        parsed = urlparse(database_url)
+        target_db = parsed.path.lstrip("/")
+        if target_db and target_db != "postgres":
+            maintenance_url = urlunparse(parsed._replace(path="/postgres"))
+            m_engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 3})
+            with m_engine.connect() as m_conn:
+                exists = m_conn.execute(text(f"SELECT 1 FROM pg_database WHERE datname = :dbname"), {"dbname": target_db}).scalar()
+                if not exists:
+                    m_conn.execute(text(f'CREATE DATABASE "{target_db}"'))
+            m_engine.dispose()
+    except Exception:
+        pass
+
     try:
         engine = create_engine(database_url, connect_args={"connect_timeout": 3})
         with engine.connect() as conn:
