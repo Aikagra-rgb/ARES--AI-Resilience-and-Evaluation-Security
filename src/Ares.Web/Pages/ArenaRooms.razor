@@ -73,6 +73,7 @@ else if (_room is not null)
             }
         }
         catch (OperationCanceledException) { }
+        catch { }
         finally { _loading = false; }
     }
 

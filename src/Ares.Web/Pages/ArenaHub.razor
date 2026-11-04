@@ -138,6 +138,7 @@ else
             _paths = pathsTask.Result;
         }
         catch (OperationCanceledException) { }
+        catch { }
     }
 
     public void Dispose() { _cts.Cancel(); _cts.Dispose(); }

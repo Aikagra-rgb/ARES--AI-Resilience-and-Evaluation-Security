@@ -4,5 +4,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Ares.Web</RootNamespace>
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 </Project>

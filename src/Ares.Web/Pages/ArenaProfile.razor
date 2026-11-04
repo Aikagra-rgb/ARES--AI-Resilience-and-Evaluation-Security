@@ -53,6 +53,7 @@ else
             _profile = await profileTask; _progress = await progressTask;
         }
         catch (OperationCanceledException) { }
+        catch { }
     }
 
     public void Dispose() { _cancellation.Cancel(); _cancellation.Dispose(); }

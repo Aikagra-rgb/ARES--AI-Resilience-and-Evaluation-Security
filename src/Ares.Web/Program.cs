@@ -45,14 +45,17 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Register Ares API clients
+var useMock = builder.Configuration.GetValue<bool>("Ares:UseMock", defaultValue: false);
+var baseUrl = builder.Configuration["Ares:ApiBaseUrl"] ?? "http://localhost:8000";
+var apiKey = builder.Configuration["Ares:ApiKey"] ?? "ares-dev-secret-key-42";
+
+// Register Ares API clients via Typed HttpClient so BaseAddress is always configured
 builder.Services.AddHttpClient<FastApiAresApiClient>(client =>
 {
-    var baseUrl = builder.Configuration["Ares:ApiBaseUrl"] ?? "http://localhost:8000";
     client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(120);
+    client.DefaultRequestHeaders.Add("X-Ares-Api-Key", apiKey);
 });
-builder.Services.AddScoped<IAresApiClient, FastApiAresApiClient>();
 
 // Add services for Interactive Server only
 builder.Services.AddRazorComponents()
@@ -69,10 +72,6 @@ builder.Services.AddRazorComponents()
 builder.Services.AddSingleton<MockQdrantCorpusService>();
 builder.Services.AddScoped<MockAresApiClient>();
 
-var useMock = builder.Configuration.GetValue<bool>("Ares:UseMock", defaultValue: false);
-var baseUrl = builder.Configuration["Ares:ApiBaseUrl"] ?? "http://localhost:8000";
-var apiKey = builder.Configuration["Ares:ApiKey"] ?? "ares-dev-secret-key-42";
-
 if (useMock)
 {
     builder.Services.AddScoped<IAresApiClient>(provider => provider.GetRequiredService<MockAresApiClient>());
@@ -80,6 +79,7 @@ if (useMock)
 }
 else
 {
+    builder.Services.AddScoped<IAresApiClient>(provider => provider.GetRequiredService<FastApiAresApiClient>());
     builder.Services.AddHttpClient<RealQdrantCorpusService>(client =>
     {
         client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");

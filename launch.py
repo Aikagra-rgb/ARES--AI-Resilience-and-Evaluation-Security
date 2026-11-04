@@ -208,7 +208,10 @@ def detect_environment(repo_root: Path | None = None) -> EnvironmentInfo:
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Check if a network port is actively in use."""
+    """Check if a network port is actively in use (IPv4 or IPv6)."""
+    if get_pids_for_port(port):
+        return True
+
     # First attempt: connect to port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.3)
