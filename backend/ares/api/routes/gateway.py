@@ -1,14 +1,15 @@
 """
 Runtime Enforcement Gateway Routes.
-Provides live prompt inspection, OpenAI-compatible chat guardrail proxy, and status endpoints.
+Provides live prompt inspection, OpenAI-compatible chat guardrail proxy, outbound redaction, and status endpoints.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, Request
+from pydantic import BaseModel, Field
 
 from ares.api.dependencies import verify_api_key
 from ares.api.schemas import (
@@ -29,6 +30,18 @@ router = APIRouter(prefix="/api/gateway", tags=["gateway"])
 
 _shared_enforcer: Optional[RuntimeEnforcer] = None
 _shared_store: Optional[QdrantStore] = None
+
+
+class OutboundInspectRequest(BaseModel):
+    response_text: str = Field(..., description="Model output text to inspect for PII, secrets, and canary leaks")
+    canary_token: Optional[str] = Field(None, description="Optional override canary token")
+
+
+class OutboundInspectResponse(BaseModel):
+    blocked: bool
+    redacted_text: str
+    redactions_applied: List[str] = Field(default_factory=list)
+    reason: str
 
 
 def get_enforcer(request: Request) -> RuntimeEnforcer:
@@ -94,6 +107,26 @@ async def enforce_prompt(
     return await enforcer.enforce(request, context=tenant_ctx)
 
 
+@router.post("/inspect-outbound", response_model=OutboundInspectResponse)
+async def inspect_outbound(
+    request: OutboundInspectRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    enforcer: RuntimeEnforcer = Depends(get_enforcer),
+) -> OutboundInspectResponse:
+    """
+    Two-Way Firewall Outbound Guardrail:
+    Scans LLM output for canary exfiltration and automatically redacts API keys, JWTs,
+    database connection strings, private keys, SSNs, and credit cards.
+    """
+    result = enforcer.inspect_outbound_response(
+        response_text=request.response_text,
+        canary_token=request.canary_token,
+        context=tenant_ctx,
+    )
+    return OutboundInspectResponse(**result)
+
+
 @router.post("/chat", response_model=ChatProxyResponse)
 async def chat_proxy(
     request: ChatProxyRequest,
@@ -105,6 +138,7 @@ async def chat_proxy(
     Guardrail chat proxy for production LLM calls.
     Inspects messages against attack vectors. If blocked, returns immediate refusal.
     If sanitized, wraps prompt with token-efficient boundary before forwarding to downstream LLM.
+    Applies outbound PII/secret redaction and canary exfiltration trap on model output.
     """
     messages_payload = [{"role": m.role, "content": m.content} for m in request.messages]
     decision, response_text = await enforcer.proxy_chat(
@@ -141,4 +175,43 @@ async def get_gateway_status(
         sanitize_threshold=default_settings.gateway_sanitize_threshold,
         canary_token_configured=bool(default_settings.gateway_canary_token),
         version="1.0.0",
+    )
+
+
+class OutboundInspectRequest(BaseModel):
+    response_text: str = Field(..., min_length=1, description="LLM response text to inspect before returning to user")
+    canary_token: Optional[str] = Field(default=None, description="Optional canary token to check for exfiltration")
+
+
+class OutboundInspectResponse(BaseModel):
+    blocked: bool
+    action: str
+    canary_leaked: bool
+    redacted_text: str
+    redactions_applied: List[str]
+    reason: str
+
+
+@router.post("/inspect-outbound", response_model=OutboundInspectResponse)
+async def inspect_outbound_gateway_response(
+    req: OutboundInspectRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
+    store: QdrantStore = Depends(get_qdrant_store),
+) -> OutboundInspectResponse:
+    """
+    Two-Way Firewall Outbound Response Guardrail:
+    Inspects LLM output for canary token exfiltration and scrubs sensitive secrets/PII.
+    """
+    enforcer = RuntimeEnforcer(settings=default_settings, store=store)
+    result = enforcer.inspect_outbound_response(
+        response_text=req.response_text,
+        canary_token=req.canary_token,
+    )
+    return OutboundInspectResponse(
+        blocked=result["blocked"],
+        action=result["action"],
+        canary_leaked=result["canary_leaked"],
+        redacted_text=result["redacted_text"],
+        redactions_applied=result["redactions_applied"],
+        reason=result["reason"],
     )

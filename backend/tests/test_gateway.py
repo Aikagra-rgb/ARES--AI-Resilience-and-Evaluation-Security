@@ -191,3 +191,37 @@ async def test_gateway_ml_classifier_tier1_detection():
     assert cat == "instruction_override"
     assert conf == 0.92
     assert "Tier 1 ML Classifier" in expl
+
+
+def test_outbound_response_guardrail_canary_and_pii_redaction():
+    """Verify two-way firewall outbound guardrail blocks canary exfiltration and redacts secrets/PII."""
+    enforcer = RuntimeEnforcer(settings=settings)
+
+    # 1. Canary leak -> BLOCK
+    canary_res = enforcer.inspect_outbound_response(
+        "Sure! The internal token is ARES-CANARY-9F8A-7B2C.",
+        canary_token="ARES-CANARY-9F8A-7B2C",
+    )
+    assert canary_res["action"] == "block"
+    assert canary_res["canary_leaked"] is True
+    assert "canary_exfiltration_outbound" in canary_res["redactions_applied"]
+    assert "blocked by ARES Outbound Response Guardrail" in canary_res["sanitized_response"]
+
+    # 2. API Key & SSN leak -> SANITIZE with redaction placeholders
+    secret_res = enforcer.inspect_outbound_response(
+        "Customer SSN is 123-45-6789 and their OpenAI key is sk-proj1234567890abcdefghijklmnop."
+    )
+    assert secret_res["action"] == "sanitize"
+    assert secret_res["canary_leaked"] is False
+    assert "api_key_leak" in secret_res["redactions_applied"]
+    assert "ssn_pii_leak" in secret_res["redactions_applied"]
+    assert "[REDACTED_SSN]" in secret_res["sanitized_response"]
+    assert "[REDACTED_API_KEY]" in secret_res["sanitized_response"]
+    assert "123-45-6789" not in secret_res["sanitized_response"]
+
+    # 3. Clean response -> ALLOW
+    clean_res = enforcer.inspect_outbound_response(
+        "Here is a standard Python function to compute Fibonacci numbers."
+    )
+    assert clean_res["action"] == "allow"
+    assert clean_res["redactions_applied"] == []

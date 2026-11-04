@@ -1160,3 +1160,63 @@ async def test_attached_runtime_gateway_background_enforcement():
 
 
 
+@pytest.mark.asyncio
+async def test_optimize_prompt_stream_sse_events():
+    """Verify that optimize_prompt_stream yields all 5 real-time stage events plus final complete payload."""
+    from ares.api.schemas import EnforceActionEnum, EnforceResponse, SeverityEnum
+    from ares.config import Settings
+
+    s = Settings(ARES_USE_LORA_SERVER=False)
+    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm.complete = AsyncMock(
+        return_value=CompletionResponse(
+            text="def reverse_string(s: str) -> str: return s[::-1]",
+            provider_used="ollama",
+            model_used="llama3.1:8b",
+            latency_ms=11.0,
+            prompt_tokens=20,
+            completion_tokens=10,
+            total_tokens=30,
+        )
+    )
+    mock_emb = MagicMock(spec=GeminiEmbedder)
+    mock_emb.embed_text = AsyncMock(return_value=[1.0] + [0.0] * 767)
+
+    mock_enforcer = MagicMock()
+    mock_enforcer.enforce = AsyncMock(
+        return_value=EnforceResponse(
+            action=EnforceActionEnum.allow,
+            risk_score=2,
+            severity=SeverityEnum.safe,
+            matched_technique="clean",
+            vector_similarity=0.08,
+            sanitized_prompt=None,
+            explanation="Clean",
+            latency_ms=4.5,
+            correlation_id="sse-test",
+        )
+    )
+
+    opt = UserPromptOptimizer(
+        settings=s,
+        llm_client=mock_llm,
+        embedder=mock_emb,
+        runtime_enforcer=mock_enforcer,
+    )
+
+    events = []
+    async for evt in opt.optimize_prompt_stream(
+        "Could you please write me a Python function that reverses a string with type annotations?",
+        domain="software",
+    ):
+        events.append(evt)
+
+    stages = [e["stage"] for e in events]
+    assert "gateway_sandbox" in stages
+    assert "intent_classification" in stages
+    assert "qdrant_rag" in stages
+    assert "llm_synthesis" in stages
+    assert "fidelity_verification" in stages
+    assert stages[-1] == "complete"
+    assert events[-1]["result"]["status"].lower() == "success"
+    assert events[-1]["result"]["security_verdict"] == "CLEAN_VERIFIED"

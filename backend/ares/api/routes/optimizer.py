@@ -5,9 +5,11 @@ Provides endpoints to optimize prompts, retrieve intent categories, and inspect 
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ares.config import settings
@@ -122,6 +124,31 @@ async def optimize_prompt_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Prompt optimization failed: {str(exc)}",
         ) from exc
+
+
+@router.post("/api/v1/optimizer/optimize/stream")
+@router.post("/api/optimizer/optimize/stream")
+async def optimize_prompt_stream_endpoint(
+    req: OptimizePromptRequest,
+    optimizer: UserPromptOptimizer = Depends(get_prompt_optimizer),
+) -> StreamingResponse:
+    """
+    Stream real-time Server-Sent Events (SSE) for each stage of the prompt optimization pipeline.
+    """
+    async def _event_generator():
+        try:
+            async for event in optimizer.optimize_prompt_stream(
+                user_prompt=req.prompt,
+                domain=req.domain,
+                target_fidelity=req.target_fidelity,
+                allow_harmful=req.allow_harmful,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            logger.error("Error in optimization stream: %s", exc, exc_info=True)
+            yield f"data: {json.dumps({'event': 'error', 'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")
 
 
 @router.get("/api/v1/optimizer/intents", response_model=List[IntentInfoResponse])

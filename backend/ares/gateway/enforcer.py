@@ -83,6 +83,40 @@ _INJECTION_PATTERNS = [
     (re.compile(r"(?i)\b(execute|run|follow|obey)\s+(the\s+)?(following\s+)?(base64|rot13|hex)\b"), "encoding_tricks", 85),
 ]
 
+# Outbound PII & Secret Redaction Patterns (Two-Way Firewall)
+_OUTBOUND_REDACTION_PATTERNS: List[Tuple[re.Pattern[str], str, str]] = [
+    (
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+        "[REDACTED_PRIVATE_KEY]",
+        "private_key_leak",
+    ),
+    (
+        re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|gsk_[A-Za-z0-9]{24,}|nvapi-[A-Za-z0-9_-]{20,})\b"),
+        "[REDACTED_API_KEY]",
+        "api_key_leak",
+    ),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        "[REDACTED_JWT_TOKEN]",
+        "jwt_token_leak",
+    ),
+    (
+        re.compile(r"(?:postgres|postgresql|mysql|mongodb|redis)://[^\s\"'<>]+"),
+        "[REDACTED_DB_URI]",
+        "database_uri_leak",
+    ),
+    (
+        re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+        "[REDACTED_SSN]",
+        "ssn_pii_leak",
+    ),
+    (
+        re.compile(r"\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[ -]?\d{4}[ -]?\d{4}[ -]?\d{3,4}\b"),
+        "[REDACTED_CREDIT_CARD]",
+        "credit_card_pii_leak",
+    ),
+]
+
 
 class RuntimeEnforcer:
     """
@@ -753,6 +787,73 @@ class RuntimeEnforcer:
 
         return decision
 
+    def inspect_outbound_response(
+        self,
+        response_text: str,
+        canary_token: Optional[str] = None,
+        context: Optional[TenantContext] = None,
+    ) -> Dict[str, Any]:
+        """
+        Two-Way Firewall Outbound Guardrail:
+        1. Traps leaked system canary tokens (blocks response entirely).
+        2. Redacts leaked API keys, JWTs, database URIs, private keys, SSNs, and credit cards.
+        Returns a dictionary with `blocked`, `redacted_text`, `redactions_applied`, and `reason`.
+        """
+        if not response_text:
+            return {
+                "blocked": False,
+                "action": "allow",
+                "canary_leaked": False,
+                "redacted_text": response_text,
+                "sanitized_response": response_text,
+                "redactions_applied": [],
+                "reason": "Empty response",
+            }
+
+        effective_canary = (
+            canary_token
+            or (context.canary_token if (context and context.canary_token) else None)
+            or (self.settings.gateway_canary_token if self.settings.gateway_canary_token else None)
+        )
+
+        if effective_canary and effective_canary in response_text:
+            blocked_msg = (
+                "[ARES Outbound Guardrail] Response blocked by ARES Outbound Response Guardrail: "
+                "Unauthorized system canary token exfiltration detected in model output."
+            )
+            return {
+                "blocked": True,
+                "action": "block",
+                "canary_leaked": True,
+                "redacted_text": blocked_msg,
+                "sanitized_response": blocked_msg,
+                "redactions_applied": ["canary_exfiltration_outbound"],
+                "reason": "Canary token exfiltration intercepted in outbound response.",
+            }
+
+        working_text = response_text
+        redactions_applied: List[str] = []
+
+        for pattern, replacement, category in _OUTBOUND_REDACTION_PATTERNS:
+            if pattern.search(working_text):
+                working_text = pattern.sub(replacement, working_text)
+                if category not in redactions_applied:
+                    redactions_applied.append(category)
+
+        return {
+            "blocked": False,
+            "action": "sanitize" if redactions_applied else "allow",
+            "canary_leaked": False,
+            "redacted_text": working_text,
+            "sanitized_response": working_text,
+            "redactions_applied": redactions_applied,
+            "reason": (
+                f"Outbound guardrail scrubbed {len(redactions_applied)} sensitive pattern category(s): {', '.join(redactions_applied)}"
+                if redactions_applied
+                else "Outbound response verified clean."
+            ),
+        }
+
     async def proxy_chat(
         self,
         messages: List[Dict[str, str]],
@@ -762,6 +863,7 @@ class RuntimeEnforcer:
     ) -> Tuple[EnforceResponse, str]:
         """
         Inspect last user message and forward to target LLM if allowed/sanitized.
+        Applies two-way outbound PII/secret redaction and canary exfiltration trap on model output.
         """
         # Find latest user message
         user_msg = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
@@ -806,7 +908,18 @@ class RuntimeEnforcer:
                 model=target_model,
                 temperature=0.7,
             )
-            return decision, resp.text
+            outbound_check = self.inspect_outbound_response(resp.text, context=context)
+            if outbound_check["blocked"]:
+                decision = decision.model_copy(
+                    update={
+                        "action": EnforceActionEnum.block,
+                        "risk_score": 100,
+                        "severity": SeverityEnum.critical,
+                        "matched_technique": "canary_exfiltration_outbound",
+                        "explanation": outbound_check["reason"],
+                    }
+                )
+            return decision, outbound_check["redacted_text"]
         except CircuitBreakerOpenError as cbe:
             logger.error("Downstream LLM circuit breaker open: %s", cbe)
             return decision, f"[ARES Gateway Alert] Target LLM circuit breaker open: {cbe}"

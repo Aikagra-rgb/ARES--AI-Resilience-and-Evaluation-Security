@@ -1,6 +1,7 @@
 @page "/reports"
 @implements IDisposable
 @inject IAresApiClient Api
+@inject IJSRuntime JS
 
 <PageTitle>Reports · ARES</PageTitle>
 
@@ -20,9 +21,14 @@ else
             <h1>Security Reports</h1>
             <p>All red-team evaluation, prompt hardening, corpus ingestion, and ML analytics reports.</p>
         </div>
-        <div class="intro-meta">
-            <span>Last refreshed</span>
-            <strong>@DateTime.UtcNow.ToString("dd MMM yyyy, HH:mm") UTC</strong>
+        <div class="intro-meta" style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+            <div>
+                <span style="display:block;font-size:0.75rem;">Last refreshed</span>
+                <strong>@DateTime.UtcNow.ToString("dd MMM yyyy, HH:mm") UTC</strong>
+            </div>
+            <button class="button button-primary" style="font-size:0.8rem;" @onclick="GenerateExecutiveSummary">
+                📥 Export Executive Audit (.md)
+            </button>
             <button class="text-button" @onclick="LoadAsync">Refresh</button>
         </div>
     </section>
@@ -47,9 +53,14 @@ else
                     <span>Sweep executed</span><strong>@latest.Timestamp.ToString("dd MMM yyyy, HH:mm") UTC</strong>
                     <p>Provider: <strong>@latest.Provider</strong> · Model: <code>@latest.Model</code></p>
                 </div>
-                <button class="button button-primary" style="width:100%;margin-bottom:0.5rem;" @onclick="() => ViewAuditReportAsync(latest.Id)">
-                    📄 View Security Audit Report
-                </button>
+                <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+                    <button class="button button-primary" style="flex:1;" @onclick="() => ViewAuditReportAsync(latest.Id)">
+                        📄 View Security Audit
+                    </button>
+                    <a class="button button-secondary" style="flex:1;" href="@($"/optimizer?tab=system_hardener&testId={Uri.EscapeDataString(latest.Id)}")">
+                        🛡️ Immunize in Optimizer
+                    </a>
+                </div>
             }
             else
             {
@@ -140,7 +151,7 @@ else
                             <th scope="col">Provider</th>
                             <th scope="col">Risk score</th>
                             <th scope="col">Status</th>
-                            <th scope="col">Report</th>
+                            <th scope="col">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -153,7 +164,10 @@ else
                                 <td>@item.Provider</td>
                                 <td><SeverityBadge Value="ScoreToSeverity(item.RiskScore)" /></td>
                                 <td><span class="table-status">@item.Status</span></td>
-                                <td><button class="text-button" @onclick="() => ViewAuditReportAsync(item.Id)">View Audit</button></td>
+                                <td style="display:flex;gap:0.65rem;align-items:center;">
+                                    <button class="text-button" @onclick="() => ViewAuditReportAsync(item.Id)">📄 Audit</button>
+                                    <a class="text-button" style="color:#34d399;" href="@($"/optimizer?tab=system_hardener&testId={Uri.EscapeDataString(item.Id)}")">🛡️ Immunize</a>
+                                </td>
                             </tr>
                         }
                     </tbody>
@@ -170,8 +184,16 @@ else
                     <p class="eyebrow">Security Audit Telemetry</p>
                     <h2 id="audit-viewer-heading">Audit Report: @_selectedReportId</h2>
                 </div>
-                <div>
-                    <button class="button button-secondary" style="font-size:0.85rem;" @onclick="() => _selectedReportContent = null">Close</button>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <a class="button button-primary" style="font-size:0.8rem;"
+                       download="@($"ares-report-{_selectedReportId ?? "executive"}.md")"
+                       href="@($"data:text/markdown;charset=utf-8,{Uri.EscapeDataString(_selectedReportContent)}")">
+                        📥 Download .md
+                    </a>
+                    <button class="button button-secondary" style="font-size:0.8rem;" @onclick="CopyReportMarkdownAsync">
+                        @(_reportCopied ? "✓ Copied!" : "📋 Copy Markdown")
+                    </button>
+                    <button class="button button-secondary" style="font-size:0.8rem;" @onclick="() => _selectedReportContent = null">Close</button>
                 </div>
             </div>
             <pre style="background:#040711;border:1px solid var(--border);padding:1rem;border-radius:6px;overflow-x:auto;font-size:0.85rem;color:#38bdf8;white-space:pre-wrap;max-height:450px;"><code>@_selectedReportContent</code></pre>
@@ -185,6 +207,7 @@ else
     private HardeningComparison _hardening = new(0, 0, 0, 0, DateOnly.MinValue);
     private StatsResponse? _stats;
     private bool _loading = true;
+    private bool _reportCopied;
     private string? _error;
 
     protected override Task OnInitializedAsync() => LoadAsync();
@@ -217,6 +240,7 @@ else
     private async Task ViewAuditReportAsync(string testId)
     {
         _selectedReportId = testId;
+        _reportCopied = false;
         _selectedReportContent = "Generating security audit report…";
         try
         {
@@ -228,6 +252,65 @@ else
         }
     }
 
+    private void GenerateExecutiveSummary()
+    {
+        _selectedReportId = "executive-compliance-summary";
+        _reportCopied = false;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("# ARES Executive AI Resilience & Compliance Audit Summary");
+        sb.AppendLine($"**Generated At:** {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine("**Compliance Frameworks:** OWASP LLM Top 10 (2025) · MITRE ATLAS · Zero-Trust AI Gateway");
+        sb.AppendLine();
+        sb.AppendLine("## 1. Zero-Trust Prompt Hardening Benchmark");
+        sb.AppendLine($"- **Baseline Attack Success Rate (ASR):** {_hardening.BaselineSuccessRate}%");
+        sb.AppendLine($"- **Hardened Attack Success Rate (ASR):** {_hardening.HardenedSuccessRate}%");
+        sb.AppendLine($"- **Net Robustness Gain:** +{_hardening.ImprovementPoints} percentage points across {_hardening.TestsIncluded} controlled test(s)");
+        sb.AppendLine();
+        sb.AppendLine("## 2. Vector Shield & ML Threat Classification Telemetry");
+        if (_stats is not null)
+        {
+            sb.AppendLine($"- **Qdrant Attack Corpus Size:** {_stats.CorpusSize:N0} embedded adversarial vectors");
+            sb.AppendLine($"- **Overall Classifier Accuracy:** {_stats.OverallAccuracy:F1}%");
+            sb.AppendLine($"- **5-Fold Cross-Validation Accuracy:** {_stats.CvAccuracy:F1}% (±{_stats.CvStd:F1}%)");
+            sb.AppendLine($"- **Active Classifier Pipeline:** `{_stats.ModelName}`");
+        }
+        else
+        {
+            sb.AppendLine("- *ML Classifier telemetry pending synchronization.*");
+        }
+        sb.AppendLine();
+        sb.AppendLine("## 3. Recent Controlled Red-Team Evaluations");
+        if (_recent is { Count: > 0 })
+        {
+            sb.AppendLine("| Test ID | Timestamp (UTC) | Category | Provider | Model | Risk Score | Status |");
+            sb.AppendLine("|---|---|---|---|---|---|---|");
+            foreach (var r in _recent.Take(10))
+            {
+                sb.AppendLine($"| `{r.Id}` | {r.Timestamp:yyyy-MM-dd HH:mm} | `{r.Category}` | {r.Provider} | `{r.Model}` | {r.RiskScore}% | {r.Status} |");
+            }
+        }
+        else
+        {
+            sb.AppendLine("- *No controlled red-team evaluations recorded in current window.*");
+        }
+        _selectedReportContent = sb.ToString();
+    }
+
+    private async Task CopyReportMarkdownAsync()
+    {
+        if (string.IsNullOrEmpty(_selectedReportContent)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _selectedReportContent);
+            _reportCopied = true;
+            await Task.Delay(2500);
+            _reportCopied = false;
+        }
+        catch
+        {
+            _reportCopied = true;
+        }
+    }
+
     public void Dispose() => _cts.Cancel();
 }
-

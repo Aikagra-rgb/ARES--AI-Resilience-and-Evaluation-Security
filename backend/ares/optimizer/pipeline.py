@@ -82,10 +82,36 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     return max(0.0, min(1.0, dot / (norm_a * norm_b)))
 
 
+_TIKTOKEN_ENCODER: Any = None
+_TIKTOKEN_CHECKED: bool = False
+
+
+def _get_tiktoken_encoder() -> Any:
+    """Lazily load the cl100k_base tiktoken encoder if installed and cached."""
+    global _TIKTOKEN_ENCODER, _TIKTOKEN_CHECKED
+    if not _TIKTOKEN_CHECKED:
+        _TIKTOKEN_CHECKED = True
+        try:
+            import tiktoken  # type: ignore
+            _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _TIKTOKEN_ENCODER = None
+    return _TIKTOKEN_ENCODER
+
+
 def _estimate_tokens(text: str) -> int:
-    """Approximate subword token count (~1.3 tokens per whitespace word)."""
-    if not text:
+    """
+    Calculate subword token count using tiktoken (cl100k_base) when available,
+    falling back to deterministic ~1.3 tokens per whitespace word heuristic.
+    """
+    if not text or not text.strip():
         return 0
+    encoder = _get_tiktoken_encoder()
+    if encoder is not None:
+        try:
+            return max(1, len(encoder.encode(text, disallowed_special=())))
+        except Exception:
+            pass
     return max(1, int(len(text.split()) * 1.3))
 
 
@@ -837,6 +863,92 @@ class UserPromptOptimizer:
             exemplars_used=len(exemplars),
             reasoning=reasoning,
         )
+
+    async def optimize_prompt_stream(
+        self,
+        user_prompt: str,
+        domain: Optional[str] = None,
+        target_fidelity: Optional[float] = None,
+        allow_harmful: bool = False,
+    ):
+        """
+        Async generator yielding real-time SSE stage telemetry dicts followed by the final result.
+        """
+        yield {
+            "event": "stage",
+            "stage": "gateway_sandbox",
+            "step": 1,
+            "total_steps": 5,
+            "status": "running",
+            "message": "Evaluating inbound prompt in Runtime Gateway Sandbox...",
+        }
+        result = await self.optimize_prompt(
+            user_prompt=user_prompt,
+            domain=domain,
+            target_fidelity=target_fidelity,
+            allow_harmful=allow_harmful,
+        )
+        if result.status == OptimizationStatus.BLOCKED_SECURITY:
+            yield {
+                "event": "stage",
+                "stage": "gateway_sandbox",
+                "step": 1,
+                "total_steps": 5,
+                "status": "blocked",
+                "message": result.reasoning or "Blocked by Runtime Gateway Sandbox.",
+            }
+            yield {
+                "event": "complete",
+                "stage": "complete",
+                "result": result.model_dump(mode="json"),
+            }
+            return
+
+        yield {
+            "event": "stage",
+            "stage": "gateway_sandbox",
+            "step": 1,
+            "total_steps": 5,
+            "status": "completed",
+            "message": f"Runtime Gateway Verdict: {result.security_verdict}",
+        }
+        yield {
+            "event": "stage",
+            "stage": "intent_classification",
+            "step": 2,
+            "total_steps": 5,
+            "status": "completed",
+            "message": f"Classified intent as '{result.intent.value}' ({int(result.intent_confidence * 100)}% confidence) -> {result.directive_name}",
+        }
+        yield {
+            "event": "stage",
+            "stage": "qdrant_rag",
+            "step": 3,
+            "total_steps": 5,
+            "status": "completed",
+            "message": f"Retrieved {result.exemplars_used} Qdrant exemplars and {len(result.mitigated_threats)} threat vectors",
+        }
+        yield {
+            "event": "stage",
+            "stage": "llm_synthesis",
+            "step": 4,
+            "total_steps": 5,
+            "status": "completed",
+            "message": f"Compressed {result.original_tokens} -> {result.optimized_tokens} tokens ({int(result.token_savings_pct * 100)}% reduction)",
+        }
+        yield {
+            "event": "stage",
+            "stage": "fidelity_verification",
+            "step": 5,
+            "total_steps": 5,
+            "status": "completed",
+            "message": f"Semantic fidelity {result.semantic_fidelity:.3f} vs {result.target_fidelity:.2f} target ({'PASSED' if result.verification_passed else 'FALLBACK'})",
+        }
+        yield {
+            "event": "complete",
+            "stage": "complete",
+            "result": result.model_dump(mode="json"),
+        }
 
     def _fallback_rule_compress(self, text: str) -> str:
         """Fast fallback rule-based compression when LLM is offline."""

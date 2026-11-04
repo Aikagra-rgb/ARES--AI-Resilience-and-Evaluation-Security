@@ -30,9 +30,36 @@ else
 
     <section class="analysis-section" aria-labelledby="analysis-heading">
         <div class="section-heading"><div><p class="eyebrow">Stage 03</p><h2 id="analysis-heading">Analyse</h2></div>
-            @if (HasResult) { <div class="analysis-actions"><button class="button button-secondary" disabled title="Corpus persistence is the next API capability.">Save to corpus</button><button class="button button-quiet" @onclick="ExportReport">Export report</button></div> }
+            @if (HasResult && _run is not null)
+            {
+                <div class="analysis-actions">
+                    <a class="button button-primary" href="@GetImmunizeHref()">🛡️ Immunize in Optimizer</a>
+                    <button class="button button-secondary" @onclick="SaveToCorpusAsync">Save to corpus</button>
+                    <button class="button button-quiet" @onclick="ExportReportAsync">📥 Export report</button>
+                </div>
+            }
         </div>
         @if (_notice is not null) { <div class="inline-notice success" role="status">@_notice</div> }
+        @if (!string.IsNullOrWhiteSpace(_exportedMarkdown) && _run is not null)
+        {
+            <div class="surface-card" style="margin-bottom:1rem;border-left:4px solid #38bdf8;">
+                <div class="section-heading compact" style="margin-bottom:0.5rem;">
+                    <div>
+                        <p class="eyebrow">Executive Compliance &amp; Red-Team Audit</p>
+                        <h3 style="margin:0;">Exported Markdown Report (@_run.Id)</h3>
+                    </div>
+                    <div style="display:flex;gap:0.5rem;">
+                        <a class="button button-primary" style="font-size:0.8rem;"
+                           download="@($"ares-audit-{_run.Id}.md")"
+                           href="@($"data:text/markdown;charset=utf-8,{Uri.EscapeDataString(_exportedMarkdown)}")">
+                            📥 Download .md File
+                        </a>
+                        <button class="button button-secondary" style="font-size:0.8rem;" @onclick="() => _exportedMarkdown = null">Close</button>
+                    </div>
+                </div>
+                <pre style="background:#040711;border:1px solid var(--border);padding:0.85rem;border-radius:6px;overflow-x:auto;font-size:0.8rem;color:#38bdf8;white-space:pre-wrap;max-height:280px;"><code>@_exportedMarkdown</code></pre>
+            </div>
+        }
         @if (_run?.Status == TestRunStatus.Failed)
         {
             <ErrorState Title="Provider request failed safely" Message="@_run.FailureReason" />
@@ -54,7 +81,15 @@ else
                 <RiskSummary Analysis="_run.Analysis" />
                 <div class="analysis-detail-grid">
                     <article class="analysis-card"><p class="eyebrow">Runtime classification</p><h3>@_run.Analysis.RuntimeClassification</h3><p>Security analysis is separate from model output and applies the ARES Security Gateway, Calibrated Intent Classifier, and Qdrant RAG evaluation rules.</p></article>
-                    <article class="analysis-card"><p class="eyebrow">Recommended prompt change</p><h3>@_run.Analysis.Hardening?.Summary</h3><p>@_run.Analysis.Hardening?.RecommendedChange</p></article>
+                    <article class="analysis-card">
+                        <p class="eyebrow">Recommended prompt change</p>
+                        <h3>@_run.Analysis.Hardening?.Summary</h3>
+                        <p>@_run.Analysis.Hardening?.RecommendedChange</p>
+                        <div style="margin-top:0.75rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
+                            <a class="text-button" style="color:#34d399;font-weight:600;" href="@GetImmunizeHref()">🛡️ Immunize System Prompt →</a>
+                            <a class="text-button" style="color:#38bdf8;" href="@GetOptimizeUserPromptHref()">⚡ Test Payload in Optimizer →</a>
+                        </div>
+                    </article>
                 </div>
             }
             else if (_analysisTab == "responses")
@@ -93,6 +128,7 @@ else
     private ExecutionProgress _progress = new(0, "Awaiting configuration", "Complete the form to begin a safe simulated run.", 0, 0);
     private string _analysisTab = "summary";
     private string? _notice;
+    private string? _exportedMarkdown;
     private string? _loadError;
 
     private TestRunStatus CurrentStatus => _run?.Status ?? TestRunStatus.Idle;
@@ -100,6 +136,19 @@ else
     private bool HasResult => _run?.Analysis is not null;
 
     protected override Task OnInitializedAsync() => LoadAsync();
+
+    private string GetImmunizeHref()
+    {
+        var sysPrompt = Uri.EscapeDataString(_run?.Configuration.SystemPrompt ?? _configuration.SystemPrompt ?? string.Empty);
+        var testId = Uri.EscapeDataString(_run?.Id ?? string.Empty);
+        return $"/optimizer?tab=system_hardener&systemPrompt={sysPrompt}&testId={testId}";
+    }
+
+    private string GetOptimizeUserPromptHref()
+    {
+        var userPrompt = Uri.EscapeDataString(_run?.Configuration.UserPrompt ?? _configuration.UserPrompt ?? string.Empty);
+        return $"/optimizer?tab=user_optimizer&prompt={userPrompt}";
+    }
 
     private async Task LoadAsync()
     {
@@ -118,7 +167,7 @@ else
     private async Task RunTestAsync(ArenaTestConfiguration submitted)
     {
         if (IsRunning) return;
-        _notice = null; _analysisTab = "summary";
+        _notice = null; _exportedMarkdown = null; _analysisTab = "summary";
         _runCancellation?.Cancel(); _runCancellation?.Dispose();
         _runCancellation = CancellationTokenSource.CreateLinkedTokenSource(_pageCancellation.Token);
         try
@@ -163,18 +212,31 @@ else
     {
         var selected = await Api.GetTestAsync(testId, _pageCancellation.Token);
         if (selected is null) return;
-        _run = selected; _configuration = CopyConfiguration(selected.Configuration); _analysisTab = "summary"; _notice = null;
+        _run = selected; _configuration = CopyConfiguration(selected.Configuration); _analysisTab = "summary"; _notice = null; _exportedMarkdown = null;
         _progress = new(selected.Status is TestRunStatus.Completed or TestRunStatus.Blocked ? 100 : 0, selected.Status.ToLabel(), selected.FailureReason ?? "Historical test result restored.", selected.TokenEstimate, selected.DurationMilliseconds);
     }
 
     private async Task SaveToCorpusAsync()
     {
         if (_run is null) return;
-        var saved = await Api.SaveAttackToCorpusAsync(new CorpusSaveRequest(_run.Id, "Saved from Week 1 prototype."), _pageCancellation.Token);
+        var saved = await Api.SaveAttackToCorpusAsync(new CorpusSaveRequest(_run.Id, "Saved from ARES Arena controlled test."), _pageCancellation.Token);
         _notice = $"{saved.AttackId} saved to the attack corpus. Correlation ID: {saved.CorrelationId}.";
     }
 
-    private void ExportReport() => _notice = "Report export is the next API capability to be implemented.";
+    private async Task ExportReportAsync()
+    {
+        if (_run is null) return;
+        try
+        {
+            _exportedMarkdown = await Api.GetReportAsync(_run.Id, "markdown", _pageCancellation.Token);
+            _notice = $"Markdown security audit report generated for {_run.Id}.";
+        }
+        catch
+        {
+            _notice = $"Could not export report for {_run.Id}.";
+        }
+    }
+
     private void ShowSummary() => _analysisTab = "summary";
     private void ShowResponses() => _analysisTab = "responses";
     private void ShowEvidence() => _analysisTab = "evidence";

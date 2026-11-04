@@ -213,12 +213,61 @@
 
             @if (_isOptimizing)
             {
-                <div style="padding:3.5rem 1rem;text-align:center;">
-                    <LoadingState Message="Executing Background Runtime Sandbox → Vector Shield → Intent Classifier → Llama 3.1 Synthesis…" />
+                <div style="padding:1.5rem 1rem;">
+                    <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:0.4rem;margin-bottom:1.5rem;">
+                        @foreach (var (stepNum, stepTitle, stepDesc) in GetPipelineStages())
+                        {
+                            var isCurrent = _activePipelineStep == stepNum;
+                            var isDone = _activePipelineStep > stepNum;
+                            <div style="padding:0.5rem;border-radius:6px;text-align:center;background:@(isCurrent ? "rgba(56,189,248,0.14)" : isDone ? "rgba(16,185,129,0.1)" : "rgba(255,255,255,0.03)");border:1px solid @(isCurrent ? "#38bdf8" : isDone ? "rgba(16,185,129,0.35)" : "rgba(255,255,255,0.08)");">
+                                <div style="font-size:0.72rem;font-weight:700;color:@(isCurrent ? "#38bdf8" : isDone ? "#34d399" : "#94a3b8");">
+                                    @(isDone ? "✓ " : isCurrent ? "● " : $"{stepNum}. ")@stepTitle
+                                </div>
+                                <div style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-top:0.15rem;">@stepDesc</div>
+                            </div>
+                        }
+                    </div>
+                    <div style="text-align:center;">
+                        <LoadingState Message="Executing 5-Stage Pipeline: Runtime Gateway Sandbox → Intent Classifier → Qdrant RAG → LLM Synthesis → Drift Guard…" />
+                    </div>
                 </div>
             }
             else if (_optResult is not null)
             {
+                <!-- 5-Stage Pipeline Execution Stepper -->
+                <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:0.4rem;margin:0.75rem 0;">
+                    <div style="padding:0.45rem;border-radius:6px;text-align:center;background:@(IsSecurityBlocked(_optResult.Status) ? "rgba(239,68,68,0.15)" : "rgba(16,185,129,0.1)");border:1px solid @(IsSecurityBlocked(_optResult.Status) ? "#ef4444" : "rgba(16,185,129,0.3)");">
+                        <div style="font-size:0.7rem;font-weight:700;color:@(IsSecurityBlocked(_optResult.Status) ? "#f87171" : "#34d399");">
+                            @(IsSecurityBlocked(_optResult.Status) ? "✗ 1. Gateway" : "✓ 1. Gateway")
+                        </div>
+                        <div style="font-size:0.65rem;color:rgba(255,255,255,0.6);">@_optResult.SecurityVerdict</div>
+                    </div>
+                    <div style="padding:0.45rem;border-radius:6px;text-align:center;background:@(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.02)" : "rgba(16,185,129,0.1)");border:1px solid @(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.3)");">
+                        <div style="font-size:0.7rem;font-weight:700;color:@(IsSecurityBlocked(_optResult.Status) ? "#64748b" : "#34d399");">
+                            @(IsSecurityBlocked(_optResult.Status) ? "— 2. Intent" : "✓ 2. Intent")
+                        </div>
+                        <div style="font-size:0.65rem;color:rgba(255,255,255,0.6);">@_optResult.Intent</div>
+                    </div>
+                    <div style="padding:0.45rem;border-radius:6px;text-align:center;background:@(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.02)" : "rgba(16,185,129,0.1)");border:1px solid @(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.3)");">
+                        <div style="font-size:0.7rem;font-weight:700;color:@(IsSecurityBlocked(_optResult.Status) ? "#64748b" : "#34d399");">
+                            @(IsSecurityBlocked(_optResult.Status) ? "— 3. Qdrant RAG" : "✓ 3. Qdrant RAG")
+                        </div>
+                        <div style="font-size:0.65rem;color:rgba(255,255,255,0.6);">@_optResult.ExemplarsUsed exemplars</div>
+                    </div>
+                    <div style="padding:0.45rem;border-radius:6px;text-align:center;background:@(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.02)" : "rgba(16,185,129,0.1)");border:1px solid @(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.06)" : "rgba(16,185,129,0.3)");">
+                        <div style="font-size:0.7rem;font-weight:700;color:@(IsSecurityBlocked(_optResult.Status) ? "#64748b" : "#34d399");">
+                            @(IsSecurityBlocked(_optResult.Status) ? "— 4. Synthesis" : "✓ 4. Synthesis")
+                        </div>
+                        <div style="font-size:0.65rem;color:rgba(255,255,255,0.6);">@_optResult.TokenSavingsDisplay saved</div>
+                    </div>
+                    <div style="padding:0.45rem;border-radius:6px;text-align:center;background:@(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.02)" : _optResult.VerificationPassed ? "rgba(16,185,129,0.1)" : "rgba(251,191,36,0.12)");border:1px solid @(IsSecurityBlocked(_optResult.Status) ? "rgba(255,255,255,0.06)" : _optResult.VerificationPassed ? "rgba(16,185,129,0.3)" : "rgba(251,191,36,0.35)");">
+                        <div style="font-size:0.7rem;font-weight:700;color:@(IsSecurityBlocked(_optResult.Status) ? "#64748b" : _optResult.VerificationPassed ? "#34d399" : "#fbbf24");">
+                            @(IsSecurityBlocked(_optResult.Status) ? "— 5. Drift Guard" : _optResult.VerificationPassed ? "✓ 5. Drift Guard" : "⚠ 5. Drift Guard")
+                        </div>
+                        <div style="font-size:0.65rem;color:rgba(255,255,255,0.6);">@_optResult.SemanticFidelity.ToString("F2") cosine</div>
+                    </div>
+                </div>
+
                 <!-- Security Interception Banner (if blocked) -->
                 @if (IsSecurityBlocked(_optResult.Status))
                 {
@@ -298,17 +347,95 @@
                         </div>
                     }
 
-                    <!-- Optimized Prompt Viewer -->
+                    <!-- Optimized Prompt Viewer & Visual Token Diff -->
                     <div>
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
-                            <label style="font-size:0.85rem;font-weight:600;">
-                                Optimized Prompt (<small style="color:#34d399;">Pruned &amp; Schema-Enforced</small>)
-                            </label>
+                            <div style="display:flex;align-items:center;gap:0.6rem;">
+                                <label style="font-size:0.85rem;font-weight:600;">
+                                    Optimized Prompt (<small style="color:#34d399;">Pruned &amp; Schema-Enforced</small>)
+                                </label>
+                                <button type="button" class="text-button" style="font-size:0.75rem;padding:0.15rem 0.5rem;border:1px solid rgba(56,189,248,0.3);border-radius:4px;background:@(_showVisualDiff ? "rgba(56,189,248,0.18)" : "transparent");color:#38bdf8;"
+                                        @onclick='() => _showVisualDiff = !_showVisualDiff'>
+                                    @(_showVisualDiff ? "📝 Show Raw Text" : "🔍 Visual Token Diff")
+                                </button>
+                            </div>
                             <button class="button button-secondary" style="font-size:0.75rem;padding:0.25rem 0.6rem;" @onclick="CopyOptimizedPromptAsync">
                                 @(_optCopied ? "✓ Copied!" : "📋 Copy Optimized Prompt")
                             </button>
                         </div>
-                        <textarea readonly rows="8" class="search-input" style="width:100%;font-family:monospace;font-size:0.85rem;line-height:1.45;background:rgba(0,0,0,0.3);color:#e2e8f0;border-color:rgba(52,211,153,0.3);resize:vertical;">@(_optResult.OptimizedPrompt ?? _optResult.OriginalPrompt)</textarea>
+
+                        @if (_showVisualDiff)
+                        {
+                            <div style="padding:0.85rem;background:rgba(0,0,0,0.35);border:1px solid rgba(56,189,248,0.3);border-radius:6px;font-family:monospace;font-size:0.82rem;line-height:1.65;max-height:220px;overflow-y:auto;">
+                                <div style="margin-bottom:0.5rem;font-size:0.72rem;color:#94a3b8;display:flex;gap:1rem;">
+                                    <span><span style="background:rgba(239,68,68,0.22);color:#fca5a5;text-decoration:line-through;padding:1px 4px;border-radius:3px;">Pruned Filler</span></span>
+                                    <span><span style="background:rgba(16,185,129,0.22);color:#6ee7b7;padding:1px 4px;border-radius:3px;">Compressed / Schema Token</span></span>
+                                    <span><span style="color:#cbd5e1;">Retained Anchor</span></span>
+                                </div>
+                                <div>
+                                    @foreach (var token in ComputeVisualDiff(_optResult.OriginalPrompt, _optResult.OptimizedPrompt ?? _optResult.OriginalPrompt))
+                                    {
+                                        if (token.Kind == "removed")
+                                        {
+                                            <span style="background:rgba(239,68,68,0.2);color:#fca5a5;text-decoration:line-through;padding:1px 3px;margin-right:3px;border-radius:3px;display:inline-block;">@token.Word</span>
+                                        }
+                                        else if (token.Kind == "added")
+                                        {
+                                            <span style="background:rgba(16,185,129,0.2);color:#6ee7b7;padding:1px 3px;margin-right:3px;border-radius:3px;font-weight:600;display:inline-block;">@token.Word</span>
+                                        }
+                                        else
+                                        {
+                                            <span style="color:#e2e8f0;margin-right:3px;display:inline-block;">@token.Word</span>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <textarea readonly rows="8" class="search-input" style="width:100%;font-family:monospace;font-size:0.85rem;line-height:1.45;background:rgba(0,0,0,0.3);color:#e2e8f0;border-color:rgba(52,211,153,0.3);resize:vertical;">@(_optResult.OptimizedPrompt ?? _optResult.OriginalPrompt)</textarea>
+                        }
+                    </div>
+
+                    <!-- Enterprise API Cost Savings Calculator -->
+                    <div style="margin-top:0.85rem;padding:0.75rem 0.9rem;background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.22);border-radius:6px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;">
+                            <span style="font-size:0.78rem;font-weight:700;color:#38bdf8;">💰 Enterprise Token &amp; API Cost Savings Calculator</span>
+                            <div style="display:flex;gap:0.5rem;align-items:center;">
+                                <select class="category-select" style="font-size:0.72rem;padding:0.2rem 0.4rem;height:auto;" @bind="_calcMonthlyCalls">
+                                    <option value="10000">10k calls / mo</option>
+                                    <option value="100000">100k calls / mo</option>
+                                    <option value="1000000">1M calls / mo</option>
+                                    <option value="10000000">10M calls / mo</option>
+                                </select>
+                                <select class="category-select" style="font-size:0.72rem;padding:0.2rem 0.4rem;height:auto;" @bind="_calcPricePerMillion">
+                                    <option value="2.50">GPT-4o ($2.50 / 1M)</option>
+                                    <option value="3.00">Claude 3.5 Sonnet ($3.00 / 1M)</option>
+                                    <option value="1.25">Gemini 1.5 Pro ($1.25 / 1M)</option>
+                                    <option value="0.88">Llama 3.1 70B ($0.88 / 1M)</option>
+                                </select>
+                            </div>
+                        </div>
+                        @{
+                            var savedTokensPerCall = Math.Max(0, _optResult.OriginalTokens - _optResult.OptimizedTokens);
+                            var monthlyTokensSaved = (long)savedTokensPerCall * _calcMonthlyCalls;
+                            var monthlyUsdSaved = (monthlyTokensSaved / 1_000_000.0) * _calcPricePerMillion;
+                            var annualUsdSaved = monthlyUsdSaved * 12.0;
+                        }
+                        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:0.5rem;font-size:0.78rem;">
+                            <div>
+                                <span style="color:#94a3b8;display:block;font-size:0.7rem;">Tokens Saved / Month</span>
+                                <strong style="color:#e2e8f0;">@monthlyTokensSaved.ToString("N0") tokens</strong>
+                            </div>
+                            <div>
+                                <span style="color:#94a3b8;display:block;font-size:0.7rem;">Monthly Savings</span>
+                                <strong style="color:#34d399;">$@monthlyUsdSaved.ToString("N2") / mo</strong>
+                            </div>
+                            <div>
+                                <span style="color:#94a3b8;display:block;font-size:0.7rem;">Projected Annual ROI</span>
+                                <strong style="color:#38bdf8;">$@annualUsdSaved.ToString("N2") / yr</strong>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Optimization Directives & Reasoning -->
@@ -555,6 +682,22 @@ else
     private readonly CancellationTokenSource _cts = new();
     private string _activeTab = "user_optimizer";
 
+    // ── Deep-Link Query Parameters (One-Click Immunize from Breach) ──────────
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? QueryTab { get; set; }
+
+    [SupplyParameterFromQuery(Name = "prompt")]
+    public string? QueryPrompt { get; set; }
+
+    [SupplyParameterFromQuery(Name = "systemPrompt")]
+    public string? QuerySystemPrompt { get; set; }
+
+    [SupplyParameterFromQuery(Name = "domain")]
+    public string? QueryDomain { get; set; }
+
+    [SupplyParameterFromQuery(Name = "testId")]
+    public string? QueryTestId { get; set; }
+
     // ── User Prompt Optimizer State ──────────────────────────────────────────
     private string _optUserPrompt = "Hey AI! Could you please write me a Python script that will asynchronously fetch data from multiple REST endpoints using asyncio and aiohttp? I really need it to have proper error handling, maybe some retries with backoff if a request fails, and type annotations would be wonderful. Make sure to print out the responses nicely at the end. Thanks so much!";
     private string _optDomain = "software";
@@ -563,6 +706,10 @@ else
     private bool _allowHarmful = false;
     private bool _isOptimizing;
     private bool _optCopied;
+    private bool _showVisualDiff;
+    private int _activePipelineStep = 1;
+    private int _calcMonthlyCalls = 100000;
+    private double _calcPricePerMillion = 2.50;
     private string? _optErrorMessage;
     private OptimizePromptResponse? _optResult;
 
@@ -580,6 +727,43 @@ else
     private DateTimeOffset? _mlModelUpdatedAt;
     private int _corpusPoints = 0;
 
+    protected override void OnParametersSet()
+    {
+        if (!string.IsNullOrWhiteSpace(QueryTab))
+        {
+            _activeTab = QueryTab.Trim().ToLowerInvariant() == "system_hardener"
+                ? "system_hardener"
+                : "user_optimizer";
+        }
+
+        if (!string.IsNullOrWhiteSpace(QueryPrompt))
+        {
+            _optUserPrompt = QueryPrompt;
+            _activeTab = "user_optimizer";
+        }
+
+        if (!string.IsNullOrWhiteSpace(QuerySystemPrompt))
+        {
+            _systemPrompt = QuerySystemPrompt;
+            _activeTab = "system_hardener";
+        }
+
+        if (!string.IsNullOrWhiteSpace(QueryDomain))
+        {
+            _optDomain = QueryDomain;
+            _domain = QueryDomain;
+        }
+
+        if (!string.IsNullOrWhiteSpace(QueryTestId))
+        {
+            _testId = QueryTestId;
+            if (string.IsNullOrWhiteSpace(QueryPrompt))
+            {
+                _activeTab = "system_hardener";
+            }
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -595,6 +779,47 @@ else
         {
             _mlModelUpdatedAt = null;
         }
+    }
+
+    private sealed record DiffToken(string Word, string Kind);
+
+    private static IReadOnlyList<(int StepNum, string Title, string Description)> GetPipelineStages() =>
+    [
+        (1, "Gateway", "Sandbox & regex"),
+        (2, "Intent", "5-class router"),
+        (3, "Qdrant RAG", "3-shot retrieval"),
+        (4, "Synthesis", "Llama 3.1 prune"),
+        (5, "Drift Guard", "Cosine verify")
+    ];
+
+    private static IReadOnlyList<DiffToken> ComputeVisualDiff(string original, string optimized)
+    {
+        var origWords = (original ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var optWords = (optimized ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var optSet = new HashSet<string>(
+            optWords.Select(w => w.Trim(',', '.', '!', '?', ':', ';', '"', '\'').ToLowerInvariant()),
+            StringComparer.OrdinalIgnoreCase
+        );
+        var origSet = new HashSet<string>(
+            origWords.Select(w => w.Trim(',', '.', '!', '?', ':', ';', '"', '\'').ToLowerInvariant()),
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        var tokens = new List<DiffToken>(origWords.Length + optWords.Length);
+        foreach (var word in origWords)
+        {
+            var clean = word.Trim(',', '.', '!', '?', ':', ';', '"', '\'').ToLowerInvariant();
+            if (!optSet.Contains(clean))
+            {
+                tokens.Add(new DiffToken(word, "removed"));
+            }
+        }
+        foreach (var word in optWords)
+        {
+            var clean = word.Trim(',', '.', '!', '?', ':', ';', '"', '\'').ToLowerInvariant();
+            tokens.Add(new DiffToken(word, origSet.Contains(clean) ? "kept" : "added"));
+        }
+        return tokens;
     }
 
     private static int EstimatedTokens(string? text)
@@ -674,6 +899,25 @@ else
         _optErrorMessage = null;
         _isOptimizing = true;
         _optCopied = false;
+        _activePipelineStep = 1;
+
+        using var stepCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        var stepperTask = Task.Run(async () =>
+        {
+            for (var step = 2; step <= 5; step++)
+            {
+                try
+                {
+                    await Task.Delay(180, stepCts.Token);
+                    _activePipelineStep = step;
+                    await InvokeAsync(StateHasChanged);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        });
 
         try
         {
@@ -692,6 +936,8 @@ else
         }
         finally
         {
+            stepCts.Cancel();
+            try { await stepperTask; } catch { /* ignore */ }
             _isOptimizing = false;
         }
     }
