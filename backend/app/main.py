@@ -174,6 +174,14 @@ async def v1_search(req: ares_search.SearchRequest):
 async def v1_harden(req: ares_harden.HardenRequest):
     return await ares_harden.harden_prompt(req)
 
+@app.post("/api/v1/corpus", tags=["corpus"], dependencies=_auth)
+async def v1_corpus(req: ares_corpus.CorpusSaveRequest):
+    return await ares_corpus.save_to_corpus(req)
+
+@app.get("/api/v1/tests/{test_id}/report", tags=["tests"], dependencies=_auth)
+async def v1_test_report(test_id: str, format: str = "markdown"):
+    return await ares_tests.get_test_report(test_id=test_id, format=format)
+
 
 # Prometheus metrics endpoint - secured behind API key auth
 @app.get("/metrics", tags=["observability"], dependencies=_auth)
