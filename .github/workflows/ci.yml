@@ -60,11 +60,6 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
-      - name: Build reference per-client ML models
-        working-directory: backend
-        run: |
-          python -m ares.training.client_model_trainer --org=all
-
       - name: Compilation & Syntax Gate
         working-directory: backend
         run: |
