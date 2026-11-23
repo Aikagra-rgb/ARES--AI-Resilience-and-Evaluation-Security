@@ -60,11 +60,23 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
+      - name: Build reference per-client ML models
+        working-directory: backend
+        run: |
+          python -m ares.training.client_model_trainer --org=all
+
       - name: Compilation & Syntax Gate
         working-directory: backend
         run: |
           python -m compileall -q ares app
           ruff check ares app
+
+      - name: Build reference per-client ML models
+        working-directory: backend
+        env:
+          ENVIRONMENT: "test"
+          DATABASE_URL: "sqlite:///:memory:"
+        run: python -m ares.training.client_model_trainer --org=all
 
       - name: Run pytest unit test suite
         working-directory: backend

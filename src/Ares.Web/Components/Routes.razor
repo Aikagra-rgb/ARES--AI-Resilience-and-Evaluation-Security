@@ -1,16 +1,50 @@
-<Router AppAssembly="typeof(Program).Assembly">
-    <Found Context="routeData">
-        <RouteView RouteData="routeData" DefaultLayout="typeof(Ares.Web.Components.Layout.MainLayout)" />
-        <FocusOnNavigate RouteData="routeData" Selector="h1" />
-    </Found>
-    <NotFound>
-        <LayoutView Layout="typeof(Ares.Web.Components.Layout.MainLayout)">
-            <section class="empty-state" aria-labelledby="missing-title">
-                <p class="eyebrow">404</p>
-                <h1 id="missing-title">This module is not available.</h1>
-                <p>The route may have moved, or it has not been enabled in this prototype.</p>
-                <a class="button button-primary" href="/">Return to overview</a>
-            </section>
-        </LayoutView>
-    </NotFound>
-</Router>
+<CascadingAuthenticationState>
+    <CascadingValue Value="@(new AresAntiforgeryState(AntiforgeryFieldName, AntiforgeryRequestToken))" IsFixed="true">
+        <Router AppAssembly="typeof(Program).Assembly">
+            <Found Context="routeData">
+                <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Ares.Web.Components.Layout.MainLayout)">
+                    <NotAuthorized>
+                        @if (context.User.Identity?.IsAuthenticated == true)
+                        {
+                            <section class="surface-card" style="max-width:520px;margin:3rem auto;border-left:4px solid #ef4444;">
+                                <p class="eyebrow">403 · Forbidden</p>
+                                <h1>Insufficient Operator Role</h1>
+                                <p style="font-size:0.88rem;color:#94a3b8;">Your current operator role does not have permission to access this view.</p>
+                                <a class="button button-primary" href="/">Return to Overview</a>
+                            </section>
+                        }
+                        else
+                        {
+                            <RedirectToLogin />
+                        }
+                    </NotAuthorized>
+                    <Authorizing>
+                        <section class="surface-card" style="max-width:440px;margin:3rem auto;text-align:center;">
+                            <p class="eyebrow">ARES RBAC</p>
+                            <p>Verifying operator session…</p>
+                        </section>
+                    </Authorizing>
+                </AuthorizeRouteView>
+                <FocusOnNavigate RouteData="routeData" Selector="h1" />
+            </Found>
+            <NotFound>
+                <LayoutView Layout="typeof(Ares.Web.Components.Layout.MainLayout)">
+                    <section class="empty-state" aria-labelledby="missing-title">
+                        <p class="eyebrow">404</p>
+                        <h1 id="missing-title">This module is not available.</h1>
+                        <p>The route may have moved, or it has not been enabled in this prototype.</p>
+                        <a class="button button-primary" href="/">Return to overview</a>
+                    </section>
+                </LayoutView>
+            </NotFound>
+        </Router>
+    </CascadingValue>
+</CascadingAuthenticationState>
+
+@code {
+    [Parameter]
+    public string AntiforgeryFieldName { get; set; } = "__RequestVerificationToken";
+
+    [Parameter]
+    public string AntiforgeryRequestToken { get; set; } = string.Empty;
+}

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -88,16 +89,25 @@ class LLMClient:
     def _format_messages(
         self,
         prompt: Optional[str] = None,
-        messages: Optional[List[Union[ChatMessage, Dict[str, str]]]] = None,
-    ) -> List[Dict[str, str]]:
+        messages: Optional[List[Union[ChatMessage, Dict[str, Any]]]] = None,
+    ) -> List[Dict[str, Any]]:
         """Converts prompt or messages into OpenAI-standard list of message dicts."""
         if messages:
-            formatted = []
+            formatted: List[Dict[str, Any]] = []
             for msg in messages:
                 if isinstance(msg, ChatMessage):
                     formatted.append({"role": msg.role, "content": msg.content})
                 elif isinstance(msg, dict):
-                    formatted.append({"role": msg["role"], "content": msg["content"]})
+                    role_val = msg.get("role")
+                    if not isinstance(role_val, str) or not role_val.strip():
+                        raise ValueError("Message dict must contain a non-empty string 'role' key.")
+                    if "content" not in msg and not any(
+                        k in msg for k in ("tool_calls", "function_call", "refusal", "audio")
+                    ):
+                        raise ValueError(
+                            "Message dict must contain 'content' or a structured OpenAI field (e.g. 'tool_calls')."
+                        )
+                    formatted.append(copy.deepcopy(msg))
                 else:
                     raise ValueError(f"Invalid message type: {type(msg)}")
             return formatted
@@ -109,7 +119,7 @@ class LLMClient:
     async def _call_provider_with_retry(
         self,
         provider: LLMProvider,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
@@ -242,7 +252,7 @@ class LLMClient:
     async def complete(
         self,
         prompt: Optional[str] = None,
-        messages: Optional[List[Union[ChatMessage, Dict[str, str]]]] = None,
+        messages: Optional[List[Union[ChatMessage, Dict[str, Any]]]] = None,
         provider: Optional[Union[str, LLMProvider]] = None,
         model: Optional[str] = None,
         temperature: float = 0.7,
@@ -306,7 +316,7 @@ class LLMClient:
     def complete_sync(
         self,
         prompt: Optional[str] = None,
-        messages: Optional[List[Union[ChatMessage, Dict[str, str]]]] = None,
+        messages: Optional[List[Union[ChatMessage, Dict[str, Any]]]] = None,
         provider: Optional[Union[str, LLMProvider]] = None,
         model: Optional[str] = None,
         temperature: float = 0.7,

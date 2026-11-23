@@ -133,6 +133,68 @@ else
         <a class="button button-secondary" href="/stats" style="margin-top:1rem">View full ML analytics</a>
     </article>
 
+    @* Persisted Client Red-Team Campaign History & Trend *@
+    <article class="surface-card" style="margin-bottom:1.5rem" aria-labelledby="redteam-history-heading">
+        <div class="section-heading compact">
+            <div><p class="eyebrow">Automated Adversarial Verification</p><h2 id="redteam-history-heading">Client Red-Team Campaign Trend</h2></div>
+            <a class="button button-primary" style="font-size:0.8rem;" href="/redteam">Open Red-Team Ops</a>
+        </div>
+        @if (_campaigns.Count > 0)
+        {
+            var avgCatch = _campaigns.Average(c => c.CatchRate);
+            var totalBreaches = _campaigns.Sum(c => c.BaselineBreaches);
+            var latestRun = _campaigns[0];
+            <div class="metric-grid" style="margin-bottom:1rem;">
+                <article class="surface-card metric-card">
+                    <p class="eyebrow">Campaigns Recorded</p>
+                    <p class="metric-value">@_campaigns.Count</p>
+                    <p class="metric-desc">Persisted in backend database</p>
+                </article>
+                <article class="surface-card metric-card">
+                    <p class="eyebrow">Mean Catch Rate</p>
+                    <p class="metric-value accent-green">@avgCatch.ToString("P1")</p>
+                    <p class="metric-desc">@totalBreaches baseline breaches prevented</p>
+                </article>
+                <article class="surface-card metric-card">
+                    <p class="eyebrow">Latest Latency (P50 / P99)</p>
+                    <p class="metric-value" style="color:#fcd34d;">@latestRun.LatencyP50Ms.ToString("F1") / @latestRun.LatencyP99Ms.ToString("F1") ms</p>
+                    <p class="metric-desc">Latest run <span class="subtle-code">@latestRun.RunId</span></p>
+                </article>
+            </div>
+            <div class="history-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Run ID</th>
+                            <th>Target Org</th>
+                            <th>Catch Rate</th>
+                            <th>FP Rate</th>
+                            <th>P50 / P99</th>
+                            <th>Qdrant</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in _campaigns.Take(5))
+                        {
+                            <tr>
+                                <td><span class="subtle-code">@c.RunId</span></td>
+                                <td>@c.OrgId</td>
+                                <td>@((c.CatchRate * 100).ToString("F1"))% (@c.AttacksBlocked/@c.TotalAttacks)</td>
+                                <td>@((c.FalsePositiveRate * 100).ToString("F1"))%</td>
+                                <td>@c.LatencyP50Ms.ToString("F1") / @c.LatencyP99Ms.ToString("F1") ms</td>
+                                <td>@c.QdrantVectorsUpserted</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p style="font-size:0.86rem;opacity:0.8;">No persisted red-team campaigns yet. Launch one from Red-Team Ops to build historical trend metrics.</p>
+        }
+    </article>
+
     @* Recent Test History *@
     @if (_recent?.Count > 0)
     {
@@ -204,6 +266,7 @@ else
 @code {
     private readonly CancellationTokenSource _cts = new();
     private IReadOnlyList<RecentTestItem>? _recent;
+    private IReadOnlyList<RedTeamCampaignSummary> _campaigns = Array.Empty<RedTeamCampaignSummary>();
     private HardeningComparison _hardening = new(0, 0, 0, 0, DateOnly.MinValue);
     private StatsResponse? _stats;
     private bool _loading = true;
@@ -220,6 +283,7 @@ else
             _recent    = await Api.GetRecentTestsAsync(_cts.Token);
             _hardening = await Api.GetHardeningComparisonAsync(_cts.Token);
             try { _stats = await Api.GetStatsAsync(_cts.Token); } catch { _stats = null; }
+            try { _campaigns = await Api.GetRedTeamCampaignsAsync(null, 10, _cts.Token); } catch { _campaigns = Array.Empty<RedTeamCampaignSummary>(); }
         }
         catch { _error = "Failed to load reports."; }
         finally { _loading = false; }

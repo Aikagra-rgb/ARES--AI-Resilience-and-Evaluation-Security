@@ -51,11 +51,29 @@ public sealed class RealQdrantCorpusService : IQdrantCorpusService
 
     private readonly HttpClient _http;
     private readonly ILogger<RealQdrantCorpusService>? _logger;
+    private readonly AresOperatorContext? _operatorContext;
 
-    public RealQdrantCorpusService(HttpClient http, ILogger<RealQdrantCorpusService>? logger = null)
+    public RealQdrantCorpusService(
+        HttpClient http,
+        ILogger<RealQdrantCorpusService>? logger = null,
+        AresOperatorContext? operatorContext = null)
     {
         _http = http;
         _logger = logger;
+        _operatorContext = operatorContext;
+    }
+
+    private async Task<HttpResponseMessage> PostScopedJsonAsync<T>(string route, T payload, CancellationToken cancellationToken)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, route)
+        {
+            Content = JsonContent.Create(payload, options: JsonOptions)
+        };
+        if (_operatorContext is not null)
+        {
+            await _operatorContext.ApplyHeadersAsync(req);
+        }
+        return await _http.SendAsync(req, cancellationToken);
     }
 
     public async Task<IReadOnlyList<QdrantSearchResult<AttackCorpusPayload>>> SearchAttacksAsync(
@@ -80,7 +98,7 @@ public sealed class RealQdrantCorpusService : IQdrantCorpusService
         HttpResponseMessage response;
         try
         {
-            response = await _http.PostAsJsonAsync("api/search", searchReq, JsonOptions, cancellationToken);
+            response = await PostScopedJsonAsync("api/search", searchReq, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -93,7 +111,7 @@ public sealed class RealQdrantCorpusService : IQdrantCorpusService
             if (!response.IsSuccessStatusCode)
             {
                 // Try alternate endpoint prefix /api/v1/search
-                using var alt = await _http.PostAsJsonAsync("api/v1/search", searchReq, JsonOptions, cancellationToken);
+                using var alt = await PostScopedJsonAsync("api/v1/search", searchReq, cancellationToken);
                 if (!alt.IsSuccessStatusCode)
                 {
                     var errorMsg = await alt.Content.ReadAsStringAsync(cancellationToken);
@@ -146,10 +164,10 @@ public sealed class RealQdrantCorpusService : IQdrantCorpusService
         CancellationToken cancellationToken = default)
     {
         var corpusReq = new CorpusSaveRequest(payload.TestId, payload.AnalystNote);
-        using var response = await _http.PostAsJsonAsync("api/corpus", corpusReq, JsonOptions, cancellationToken);
+        using var response = await PostScopedJsonAsync("api/corpus", corpusReq, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            using var alt = await _http.PostAsJsonAsync("api/v1/corpus", corpusReq, JsonOptions, cancellationToken);
+            using var alt = await PostScopedJsonAsync("api/v1/corpus", corpusReq, cancellationToken);
             return alt.IsSuccessStatusCode;
         }
         return true;

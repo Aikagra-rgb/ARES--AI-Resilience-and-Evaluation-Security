@@ -357,11 +357,16 @@ def get_metrics() -> MetricsRegistry:
 
 
 def get_metrics_output() -> bytes:
-    """Get Prometheus metrics output for /metrics endpoint."""
+    """Get Prometheus metrics output for /metrics endpoint (default + ARES custom registry)."""
     if not PROMETHEUS_AVAILABLE:
         return b"# Prometheus client not available\n"
-    from prometheus_client import generate_latest
-    return generate_latest()
+    from prometheus_client import REGISTRY, generate_latest
+
+    chunks = [generate_latest(REGISTRY)]
+    metrics = get_metrics()
+    if metrics._registry is not None:
+        chunks.append(generate_latest(metrics._registry))
+    return b"".join(chunk if chunk.endswith(b"\n") else chunk + b"\n" for chunk in chunks if chunk)
 
 
 # --- Structured Logging ---

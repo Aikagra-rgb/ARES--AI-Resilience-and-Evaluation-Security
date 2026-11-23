@@ -7,10 +7,14 @@ semantic similarity retrieval with metadata filtering.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import os
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -27,25 +31,35 @@ class QdrantStoreError(Exception):
     pass
 
 
+_CLIENT_LOCK = threading.RLock()
 _SHARED_LOCAL_CLIENTS: Dict[str, QdrantClient] = {}
+_SHARED_REMOTE_CLIENTS: Dict[Tuple[str, str, float], QdrantClient] = {}
+
+
+def clear_qdrant_client_caches() -> None:
+    """Clear pooled local and remote Qdrant client instances (primarily for tests)."""
+    with _CLIENT_LOCK:
+        _SHARED_LOCAL_CLIENTS.clear()
+        _SHARED_REMOTE_CLIENTS.clear()
 
 
 def _get_local_client(storage_path: str) -> QdrantClient:
-    import os
     norm_path = os.path.abspath(storage_path)
-    if norm_path not in _SHARED_LOCAL_CLIENTS:
-        try:
-            _SHARED_LOCAL_CLIENTS[norm_path] = QdrantClient(path=storage_path)
-        except Exception as exc:
-            logger.warning("Could not acquire lock for %s (%s); falling back to in-memory Qdrant", storage_path, exc)
-            return QdrantClient(":memory:")
-    return _SHARED_LOCAL_CLIENTS[norm_path]
+    with _CLIENT_LOCK:
+        if norm_path not in _SHARED_LOCAL_CLIENTS:
+            try:
+                _SHARED_LOCAL_CLIENTS[norm_path] = QdrantClient(path=storage_path)
+            except Exception as exc:
+                logger.warning("Could not acquire lock for %s (%s); falling back to in-memory Qdrant", storage_path, exc)
+                return QdrantClient(":memory:")
+        return _SHARED_LOCAL_CLIENTS[norm_path]
 
 
 class QdrantStore:
     """
     Vector storage and RAG retrieval interface using Qdrant Cloud.
-    Handles auto-collection creation, batch embeddings, and similarity search.
+    Handles lazy client initialization, pooling, auto-collection creation,
+    batch embeddings, and similarity search.
     """
 
     def __init__(
@@ -67,31 +81,66 @@ class QdrantStore:
         self.vector_size = self.settings.qdrant_vector_size
         self.embedder = embedder or GeminiEmbedder(settings=self.settings)
 
-        if client is not None:
-            self._client = client
-        else:
-            url = self.settings.qdrant_url
+        # Defer all network/disk I/O until `.client` is actually needed.
+        self._client: Optional[QdrantClient] = client
+        self._using_local_fallback: bool = False
+
+    def _resolve_client(self) -> QdrantClient:
+        if self._client is not None:
+            return self._client
+
+        with _CLIENT_LOCK:
+            if self._client is not None:
+                return self._client
+
+            url = (self.settings.qdrant_url or "").strip()
             if not url or url == ":memory:" or url.startswith("path:"):
-                storage_path = url.replace("path:", "") if url and url.startswith("path:") else "./qdrant_data"
+                storage_path = url.replace("path:", "") if url.startswith("path:") else "./qdrant_data"
                 if url == ":memory:":
                     self._client = QdrantClient(":memory:")
                 else:
                     self._client = _get_local_client(storage_path)
-            else:
-                try:
-                    self._client = QdrantClient(
-                        url=self.settings.qdrant_url,
-                        api_key=self.settings.qdrant_api_key.get_secret_value() if self.settings.qdrant_api_key else None,
-                        timeout=min(self.settings.request_timeout_seconds, 5.0),
-                    )
-                    self._client.get_collections()
-                except Exception as exc:
-                    logger.warning("Remote Qdrant connection failed (%s); switching to local persistent vector store at ./qdrant_data", exc)
-                    self._client = _get_local_client("./qdrant_data")
+                return self._client
+
+            timeout = float(getattr(self.settings, "qdrant_timeout_seconds", 5.0) or 5.0)
+            api_key = (
+                self.settings.qdrant_api_key.get_secret_value()
+                if self.settings.qdrant_api_key
+                else None
+            )
+            key_fp = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16] if api_key else ""
+            pool_key = (url, key_fp, timeout)
+
+            if pool_key in _SHARED_REMOTE_CLIENTS:
+                self._client = _SHARED_REMOTE_CLIENTS[pool_key]
+                return self._client
+
+            try:
+                remote_client = QdrantClient(
+                    url=url,
+                    api_key=api_key,
+                    timeout=timeout,
+                )
+                remote_client.get_collections()
+                _SHARED_REMOTE_CLIENTS[pool_key] = remote_client
+                self._client = remote_client
+            except Exception as exc:
+                logger.warning(
+                    "Remote Qdrant connection failed (%s); switching to local persistent vector store at ./qdrant_data",
+                    exc,
+                )
+                self._using_local_fallback = True
+                self._client = _get_local_client("./qdrant_data")
+
+            return self._client
 
     @property
     def client(self) -> QdrantClient:
-        return self._client
+        return self._resolve_client()
+
+    @property
+    def is_local_fallback(self) -> bool:
+        return self._using_local_fallback
 
 
     def ensure_collection(self, collection_name: Optional[str] = None) -> bool:
@@ -101,9 +150,10 @@ class QdrantStore:
         """
         col = collection_name or self.collection_name
         try:
-            if not self._client.collection_exists(col):
+            qclient = self.client
+            if not qclient.collection_exists(col):
                 logger.info("Creating Qdrant collection '%s' (dim=%d, distance=Cosine)...", col, self.vector_size)
-                self._client.create_collection(
+                qclient.create_collection(
                     collection_name=col,
                     vectors_config=models.VectorParams(
                         size=self.vector_size,
@@ -115,17 +165,17 @@ class QdrantStore:
                     ),
                 )
                 # Create payload indexes on frequently filtered fields
-                self._client.create_payload_index(
+                qclient.create_payload_index(
                     collection_name=col,
                     field_name="category",
                     field_schema=models.PayloadSchemaType.KEYWORD,
                 )
-                self._client.create_payload_index(
+                qclient.create_payload_index(
                     collection_name=col,
                     field_name="success",
                     field_schema=models.PayloadSchemaType.BOOL,
                 )
-                self._client.create_payload_index(
+                qclient.create_payload_index(
                     collection_name=col,
                     field_name="domain",
                     field_schema=models.PayloadSchemaType.KEYWORD,
@@ -148,7 +198,7 @@ class QdrantStore:
         Returns the point UUID.
         """
         col = collection_name or self.collection_name
-        self.ensure_collection(col)
+        await asyncio.to_thread(self.ensure_collection, col)
 
         point_id = str(uuid.uuid4())
         vector = await self.embedder.embed_text(attempt.attack_text)
@@ -177,7 +227,8 @@ class QdrantStore:
         }
 
         try:
-            self._client.upsert(
+            await asyncio.to_thread(
+                self.client.upsert,
                 collection_name=col,
                 points=[
                     models.PointStruct(
@@ -206,7 +257,7 @@ class QdrantStore:
             return 0
 
         col = collection_name or self.collection_name
-        self.ensure_collection(col)
+        await asyncio.to_thread(self.ensure_collection, col)
 
         texts = [a.attack_text for a in attempts]
         vectors = await self.embedder.embed_batch(texts)
@@ -236,7 +287,7 @@ class QdrantStore:
             points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
 
         try:
-            self._client.upsert(collection_name=col, points=points)
+            await asyncio.to_thread(self.client.upsert, collection_name=col, points=points)
             logger.info("Batch upserted %d attack attempts to collection '%s'", len(points), col)
             return len(points)
         except Exception as exc:
@@ -257,7 +308,7 @@ class QdrantStore:
         Supports filtering by category, success status, and domain.
         """
         col = collection_name or self.collection_name
-        self.ensure_collection(col)
+        await asyncio.to_thread(self.ensure_collection, col)
 
         query_vector = await self.embedder.embed_text(query_text)
 
@@ -280,7 +331,8 @@ class QdrantStore:
 
         try:
             # Uses Qdrant's universal query_points API
-            response = self._client.query_points(
+            response = await asyncio.to_thread(
+                self.client.query_points,
                 collection_name=col,
                 query=query_vector,
                 query_filter=query_filter,
@@ -305,9 +357,10 @@ class QdrantStore:
         """Return the total number of points in the collection."""
         col = collection_name or self.collection_name
         try:
-            if not self._client.collection_exists(col):
+            qclient = self.client
+            if not qclient.collection_exists(col):
                 return 0
-            res = self._client.count(collection_name=col, exact=True)
+            res = qclient.count(collection_name=col, exact=True)
             return res.count
         except Exception as exc:
             logger.error("Error counting collection '%s': %s", col, exc)
@@ -317,8 +370,9 @@ class QdrantStore:
         """Delete collection if it exists."""
         col = collection_name or self.collection_name
         try:
-            if self._client.collection_exists(col):
-                self._client.delete_collection(collection_name=col)
+            qclient = self.client
+            if qclient.collection_exists(col):
+                qclient.delete_collection(collection_name=col)
                 logger.info("Deleted collection '%s'", col)
                 return True
             return False

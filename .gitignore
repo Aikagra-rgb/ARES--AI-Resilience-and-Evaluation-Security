@@ -31,6 +31,7 @@ venv/
 .env
 .env.local
 .env.*.local
+.env.partner.*
 
 # Database
 *.db
@@ -64,6 +65,8 @@ keys/
 # Test artifacts
 test-orchestrator.db
 ares.db
+.pytest_ares_test.db
+pytest-of-*/
 
 # Qdrant local data
 qdrant_data/
@@ -76,6 +79,13 @@ qdrant_data/
 !backend/ares/training/artifacts/evaluation_benchmark_results.json
 !backend/ares/training/artifacts/evaluation_benchmark_results_full.json
 !backend/ares/training/model_registry.json
+!backend/data/redteam_findings.json
+!monitoring/grafana/provisioning/dashboards/*.json
+
+# Generated ML models & consolidated stats (built deterministically at build/CI time via:
+#   python -m ares.training.client_model_trainer --org=all)
+backend/models/
+backend/data/client_models_ml_stats.json
 
 # Docker
 docker-compose.override.yml

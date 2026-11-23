@@ -1,0 +1,144 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@using Microsoft.AspNetCore.WebUtilities
+@inject NavigationManager NavigationManager
+@inject IConfiguration Config
+
+<PageTitle>Operator Sign-In · ARES</PageTitle>
+
+<section class="surface-card" style="max-width:520px;margin:2.5rem auto;border-left:4px solid #38bdf8;">
+    <div class="section-heading compact" style="margin-bottom:1rem;">
+        <div>
+            <p class="eyebrow">ARES Console RBAC &amp; Tenant Isolation</p>
+            <h1>Operator Authentication</h1>
+            <p style="font-size:0.86rem;color:#94a3b8;margin-top:0.25rem;">
+                Sign in with an Admin key for cross-tenant governance or authenticate into a specific client organization (`org_id`) with a tenant-scoped API key.
+            </p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div role="alert" style="margin-bottom:1rem;padding:0.75rem;background:rgba(239,68,68,0.15);border:1px solid #ef4444;border-radius:6px;color:#fca5a5;font-size:0.85rem;">
+            ⚠️ @_errorMessage
+        </div>
+    }
+
+    <form method="post" action="/auth/login" style="display:flex;flex-direction:column;gap:0.9rem;">
+        @if (AntiforgeryState is not null && !string.IsNullOrEmpty(AntiforgeryState.RequestToken))
+        {
+            <input type="hidden" name="@AntiforgeryState.FieldName" value="@AntiforgeryState.RequestToken" />
+        }
+        <input type="hidden" name="return_url" value="@_returnUrl" />
+
+        <div>
+            <label for="ares-role" style="display:block;font-size:0.83rem;font-weight:600;margin-bottom:0.3rem;">Access Scope / Role</label>
+            <select id="ares-role" name="role" class="category-select" style="width:100%;" @bind="_role">
+                <option value="Tenant">Tenant Operator (Single Organization Scope)</option>
+                <option value="Admin">Platform Admin (All Tenants)</option>
+            </select>
+        </div>
+
+        @if (_role == "Tenant")
+        {
+            <div>
+                <label for="ares-org" style="display:block;font-size:0.83rem;font-weight:600;margin-bottom:0.3rem;">Target Organization ID *</label>
+                <input id="ares-org"
+                       name="org_id"
+                       list="ares-known-orgs"
+                       class="search-input"
+                       style="width:100%;"
+                       @bind="_orgId"
+                       placeholder="e.g. org_acme_fintech"
+                       required />
+                <datalist id="ares-known-orgs">
+                    <option value="org_acme_fintech"></option>
+                    <option value="org_dev_ops_agent"></option>
+                    <option value="org_medshield_health"></option>
+                </datalist>
+            </div>
+        }
+        else
+        {
+            <input type="hidden" name="org_id" value="" />
+        }
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+            <div>
+                <label for="ares-email" style="display:block;font-size:0.83rem;font-weight:600;margin-bottom:0.3rem;">Operator Email *</label>
+                <input id="ares-email"
+                       name="email"
+                       type="email"
+                       class="search-input"
+                       style="width:100%;"
+                       @bind="_email"
+                       placeholder="analyst@acme-fintech.com"
+                       required />
+            </div>
+            <div>
+                <label for="ares-name" style="display:block;font-size:0.83rem;font-weight:600;margin-bottom:0.3rem;">Display Name</label>
+                <input id="ares-name"
+                       name="display_name"
+                       type="text"
+                       class="search-input"
+                       style="width:100%;"
+                       @bind="_displayName"
+                       placeholder="Security Analyst" />
+            </div>
+        </div>
+
+        <div>
+            <label for="ares-apikey" style="display:block;font-size:0.83rem;font-weight:600;margin-bottom:0.3rem;">
+                @(_role == "Admin" ? "Master ARES Admin API Key *" : "Tenant-Scoped API Key *")
+            </label>
+            <input id="ares-apikey"
+                   name="api_key"
+                   type="password"
+                   autocomplete="current-password"
+                   class="search-input"
+                   style="width:100%;font-family:monospace;"
+                   @bind="_apiKey"
+                   placeholder="@(_role == "Admin" ? "ares-..." : "ares_tnt_<org_id>_...")"
+                   required />
+            <p style="font-size:0.75rem;color:#94a3b8;margin:0.35rem 0 0 0;">
+                Credentials are stored strictly in a server-side session bound to an HttpOnly cookie.
+            </p>
+        </div>
+
+        <button type="submit" class="button button-primary" style="margin-top:0.25rem;">
+            Sign in to ARES Console
+        </button>
+    </form>
+</section>
+
+@code {
+    [CascadingParameter]
+    private AresAntiforgeryState? AntiforgeryState { get; set; }
+
+    private string _role = "Admin";
+    private string _orgId = "org_acme_fintech";
+    private string _email = "";
+    private string _displayName = "";
+    private string _apiKey = "";
+    private string _returnUrl = "/";
+    private string? _errorMessage;
+
+    protected override void OnInitialized()
+    {
+        var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+        if (query.TryGetValue("error", out var err))
+        {
+            _errorMessage = err.ToString();
+        }
+        if (query.TryGetValue("returnUrl", out var ret) && !string.IsNullOrWhiteSpace(ret))
+        {
+            var candidate = ret.ToString();
+            if (AresAuthService.IsSafeLocalReturnUrl(candidate))
+            {
+                _returnUrl = candidate;
+            }
+        }
+        _email = Config["Ares:DevelopmentUserEmail"] ?? "admin@ares.local";
+    }
+}

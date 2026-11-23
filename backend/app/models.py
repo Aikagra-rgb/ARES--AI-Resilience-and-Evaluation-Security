@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -164,3 +164,94 @@ class AuditLog(Base):
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class RedTeamCampaign(Base):
+    __tablename__ = "redteam_campaigns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    org_id: Mapped[str] = mapped_column(String(128), index=True)
+    use_mock_llm: Mapped[bool] = mapped_column(Boolean, default=True)
+    total_attacks: Mapped[int] = mapped_column(Integer, default=0)
+    attacks_blocked: Mapped[int] = mapped_column(Integer, default=0)
+    catch_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    total_benign: Mapped[int] = mapped_column(Integer, default=0)
+    false_positives: Mapped[int] = mapped_column(Integer, default=0)
+    false_positive_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_breaches: Mapped[int] = mapped_column(Integer, default=0)
+    latency_p50_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_p99_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    findings_exported: Mapped[bool] = mapped_column(Boolean, default=False)
+    qdrant_vectors_upserted: Mapped[int] = mapped_column(Integer, default=0)
+    retrained_orgs: Mapped[list] = mapped_column(JSON, default=list)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    cases: Mapped[list["RedTeamCampaignCase"]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+
+
+class RedTeamCampaignCase(Base):
+    __tablename__ = "redteam_campaign_cases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("redteam_campaigns.id", ondelete="CASCADE"), index=True)
+    case_id: Mapped[str] = mapped_column(String(128))
+    org_id: Mapped[str] = mapped_column(String(128), index=True)
+    target_name: Mapped[str] = mapped_column(String(128))
+    attack_category: Mapped[str] = mapped_column(String(80))
+    query_preview: Mapped[str] = mapped_column(String(256))
+    expected_blocked: Mapped[bool] = mapped_column(Boolean)
+    baseline_compromised: Mapped[bool] = mapped_column(Boolean, default=False)
+    protected_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    action: Mapped[str] = mapped_column(String(32))
+    matched_technique: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    canary_leaked: Mapped[bool] = mapped_column(Boolean, default=False)
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    campaign: Mapped[RedTeamCampaign] = relationship(back_populates="cases")
+
+
+class ModerationQueueItem(Base):
+    __tablename__ = "moderation_queue_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    attack_text: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(80), default="jailbreak", index=True)
+    severity: Mapped[str] = mapped_column(String(32), default="high")
+    source: Mapped[str] = mapped_column(String(120), default="redteam_probe")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    domain: Mapped[str] = mapped_column(String(64), default="general", index=True)
+    org_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    target_prompt_hash: Mapped[str] = mapped_column(String(128), default="moderated_sample")
+    item_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    submitted_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deduplication_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duplicate_of_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    poisoning_flags: Mapped[list] = mapped_column(JSON, default=list)
+    indexed_point_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class ClientTenantRecord(Base):
+    __tablename__ = "client_tenants"
+
+    org_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160))
+    domain: Mapped[str] = mapped_column(String(64), default="general", index=True)
+    application_name: Mapped[str] = mapped_column(String(160), index=True)
+    canary_token: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    intent_model: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    compression_adapter: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    version: Mapped[str] = mapped_column(String(64), default="untrained")
+    fidelity_thresholds: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    target_endpoint_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_auth_header: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_request_format: Mapped[str] = mapped_column(String(64), default="openai_chat")
+    target_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

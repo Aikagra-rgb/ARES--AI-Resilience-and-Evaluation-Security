@@ -11,13 +11,63 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ares.config import settings as default_settings
 from ares.moderation.models import ModerationItem, ModerationStatus, SubmissionSeverity
+from ares.observability.metrics import (
+    record_moderation_approved,
+    record_moderation_rejected,
+    record_moderation_submitted,
+)
 from ares.redteam.attacker import AttackAttempt
 from ares.vectordb.store import QdrantStore
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def _format_dt_iso(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _orm_to_item(row: Any) -> ModerationItem:
+    try:
+        status_enum = ModerationStatus(str(row.status).lower())
+    except ValueError:
+        status_enum = ModerationStatus.PENDING
+    return ModerationItem(
+        id=str(row.id),
+        attack_text=str(row.attack_text),
+        category=str(row.category),
+        severity=str(row.severity),
+        source=str(row.source),
+        status=status_enum,
+        domain=str(row.domain),
+        target_prompt_hash=str(row.target_prompt_hash),
+        metadata=dict(row.item_metadata or {}),
+        submitted_by=row.submitted_by,
+        submitted_at=_format_dt_iso(row.submitted_at) or datetime.now(timezone.utc).isoformat(),
+        reviewed_by=row.reviewed_by,
+        reviewed_at=_format_dt_iso(row.reviewed_at),
+        reviewer_notes=row.reviewer_notes,
+        deduplication_score=row.deduplication_score,
+        duplicate_of_id=row.duplicate_of_id,
+        poisoning_flags=list(row.poisoning_flags or []),
+        indexed_point_id=row.indexed_point_id,
+    )
 
 # Heuristic list of common benign phrases to detect label-inversion poisoning attacks
 _BENIGN_PATTERNS = [
@@ -50,14 +100,156 @@ class AttackModerationQueue:
         dedup_threshold: float = 0.92,
         max_text_length: int = 32768,
         auto_reject_poisoned: bool = False,
+        session_factory: Optional[Callable[[], Any]] = None,
+        use_db: Optional[bool] = None,
     ):
         self.qdrant_store = qdrant_store
         self.dedup_threshold = dedup_threshold
         self.max_text_length = max_text_length
         self.auto_reject_poisoned = auto_reject_poisoned
+        self._session_factory = session_factory
+        if use_db is not None:
+            self._use_db = bool(use_db)
+        elif session_factory is not None:
+            self._use_db = True
+        else:
+            self._use_db = getattr(default_settings, "environment", "development") != "test"
 
         self._items: Dict[str, ModerationItem] = {}
         self._lock = asyncio.Lock()
+
+    def _get_session_factory(self) -> Optional[Callable[[], Any]]:
+        if not self._use_db:
+            return None
+        if self._session_factory is not None:
+            return self._session_factory
+        try:
+            from app.database import SessionLocal
+
+            return SessionLocal
+        except Exception:
+            return None
+
+    def _db_upsert_sync(self, item: ModerationItem) -> bool:
+        factory = self._get_session_factory()
+        if factory is None:
+            return False
+        try:
+            from app.models import ModerationQueueItem
+
+            meta = dict(item.metadata or {})
+            org_id = meta.get("org_id") or meta.get("organization_id")
+            status_val = (
+                item.status.value if isinstance(item.status, ModerationStatus) else str(item.status)
+            )
+            with factory() as db:
+                row = db.get(ModerationQueueItem, item.id)
+                if row is None:
+                    row = ModerationQueueItem(
+                        id=item.id,
+                        attack_text=item.attack_text,
+                        category=item.category,
+                        severity=item.severity,
+                        source=item.source,
+                        status=status_val,
+                        domain=item.domain,
+                        org_id=str(org_id) if org_id else None,
+                        target_prompt_hash=item.target_prompt_hash,
+                        item_metadata=meta,
+                        submitted_by=item.submitted_by,
+                        submitted_at=_parse_iso_dt(item.submitted_at) or datetime.now(timezone.utc),
+                        reviewed_by=item.reviewed_by,
+                        reviewed_at=_parse_iso_dt(item.reviewed_at),
+                        reviewer_notes=item.reviewer_notes,
+                        deduplication_score=item.deduplication_score,
+                        duplicate_of_id=item.duplicate_of_id,
+                        poisoning_flags=list(item.poisoning_flags or []),
+                        indexed_point_id=item.indexed_point_id,
+                    )
+                    db.add(row)
+                else:
+                    row.status = status_val
+                    row.reviewed_by = item.reviewed_by
+                    row.reviewed_at = _parse_iso_dt(item.reviewed_at)
+                    row.reviewer_notes = item.reviewer_notes
+                    row.indexed_point_id = item.indexed_point_id
+                    row.poisoning_flags = list(item.poisoning_flags or [])
+                    row.item_metadata = meta
+                    row.org_id = str(org_id) if org_id else row.org_id
+                db.commit()
+                return True
+        except Exception as exc:
+            logger.warning("Moderation DB upsert skipped (falling back to memory): %s", exc)
+            return False
+
+    def _db_get_sync(self, item_id: str) -> Tuple[bool, Optional[ModerationItem]]:
+        factory = self._get_session_factory()
+        if factory is None:
+            return False, None
+        try:
+            from app.models import ModerationQueueItem
+
+            with factory() as db:
+                row = db.get(ModerationQueueItem, item_id)
+                if row is None:
+                    return True, None
+                return True, _orm_to_item(row)
+        except Exception as exc:
+            logger.warning("Moderation DB read skipped (falling back to memory): %s", exc)
+            return False, None
+
+    def _db_list_sync(
+        self,
+        status: Optional[ModerationStatus],
+        category: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> Tuple[bool, List[ModerationItem]]:
+        factory = self._get_session_factory()
+        if factory is None:
+            return False, []
+        try:
+            from sqlalchemy import select
+            from app.models import ModerationQueueItem
+
+            with factory() as db:
+                stmt = select(ModerationQueueItem)
+                if status is not None:
+                    stmt = stmt.where(ModerationQueueItem.status == status.value)
+                if category is not None:
+                    stmt = stmt.where(ModerationQueueItem.category == category)
+                stmt = stmt.order_by(ModerationQueueItem.submitted_at.desc()).offset(offset).limit(limit)
+                rows = db.scalars(stmt).all()
+                return True, [_orm_to_item(r) for r in rows]
+        except Exception as exc:
+            logger.warning("Moderation DB list skipped (falling back to memory): %s", exc)
+            return False, []
+
+    def _db_stats_sync(self) -> Tuple[bool, Dict[str, Any]]:
+        factory = self._get_session_factory()
+        if factory is None:
+            return False, {}
+        try:
+            from sqlalchemy import select
+            from app.models import ModerationQueueItem
+
+            with factory() as db:
+                rows = db.scalars(select(ModerationQueueItem)).all()
+                total = len(rows)
+                pending = sum(1 for r in rows if r.status == ModerationStatus.PENDING.value)
+                approved = sum(1 for r in rows if r.status == ModerationStatus.APPROVED.value)
+                rejected = sum(1 for r in rows if r.status == ModerationStatus.REJECTED.value)
+                flagged = sum(1 for r in rows if len(r.poisoning_flags or []) > 0)
+                return True, {
+                    "total": total,
+                    "pending": pending,
+                    "approved": approved,
+                    "rejected": rejected,
+                    "flagged": flagged,
+                }
+        except Exception as exc:
+            logger.warning("Moderation DB stats skipped (falling back to memory): %s", exc)
+            return False, {}
 
     def _inspect_poisoning_signals(
         self,
@@ -179,7 +371,14 @@ class AttackModerationQueue:
                     await self._index_to_qdrant(item)
 
             self._items[item.id] = item
+            if self._use_db:
+                await asyncio.to_thread(self._db_upsert_sync, item)
 
+        record_moderation_submitted()
+        if item.status == ModerationStatus.APPROVED:
+            record_moderation_approved()
+        elif item.status == ModerationStatus.REJECTED:
+            record_moderation_rejected("auto_poisoning_defense")
         return item
 
     async def _index_to_qdrant(self, item: ModerationItem) -> str:
@@ -226,7 +425,13 @@ class AttackModerationQueue:
     ) -> ModerationItem:
         """Approve a pending sample and index it into Qdrant."""
         async with self._lock:
-            item = self._items.get(item_id)
+            item: Optional[ModerationItem] = None
+            if self._use_db:
+                db_ok, db_item = await asyncio.to_thread(self._db_get_sync, item_id)
+                if db_ok:
+                    item = db_item
+            if item is None:
+                item = self._items.get(item_id)
             if not item:
                 raise KeyError(f"Moderation item not found: {item_id}")
 
@@ -234,6 +439,12 @@ class AttackModerationQueue:
                 raise ValueError(
                     f"Item {item_id} cannot be approved from status {item.status.value}"
                 )
+
+            prev_status = item.status
+            prev_reviewed_by = item.reviewed_by
+            prev_reviewed_at = item.reviewed_at
+            prev_notes = item.reviewer_notes
+            prev_point_id = item.indexed_point_id
 
             item.status = ModerationStatus.APPROVED
             item.reviewed_by = reviewer_id
@@ -246,9 +457,21 @@ class AttackModerationQueue:
                 self.qdrant_store = store
                 try:
                     await self._index_to_qdrant(item)
+                except Exception:
+                    # Roll back in-memory mutations so transient Qdrant outages don't corrupt queue state
+                    item.status = prev_status
+                    item.reviewed_by = prev_reviewed_by
+                    item.reviewed_at = prev_reviewed_at
+                    item.reviewer_notes = prev_notes
+                    item.indexed_point_id = prev_point_id
+                    raise
                 finally:
                     self.qdrant_store = old_store
 
+            self._items[item.id] = item
+            if self._use_db:
+                await asyncio.to_thread(self._db_upsert_sync, item)
+            record_moderation_approved()
             return item
 
     async def reject(
@@ -262,7 +485,13 @@ class AttackModerationQueue:
             raise ValueError("Rejection reason must be provided")
 
         async with self._lock:
-            item = self._items.get(item_id)
+            item: Optional[ModerationItem] = None
+            if self._use_db:
+                db_ok, db_item = await asyncio.to_thread(self._db_get_sync, item_id)
+                if db_ok:
+                    item = db_item
+            if item is None:
+                item = self._items.get(item_id)
             if not item:
                 raise KeyError(f"Moderation item not found: {item_id}")
 
@@ -275,11 +504,21 @@ class AttackModerationQueue:
             item.reviewed_by = reviewer_id
             item.reviewed_at = datetime.now(timezone.utc).isoformat()
             item.reviewer_notes = reason.strip()
+            self._items[item.id] = item
+            if self._use_db:
+                await asyncio.to_thread(self._db_upsert_sync, item)
+            record_moderation_rejected("moderator_rejected")
             return item
 
     async def get_item(self, item_id: str) -> Optional[ModerationItem]:
         """Retrieve a moderation item by its ID."""
         async with self._lock:
+            if self._use_db:
+                db_ok, db_item = await asyncio.to_thread(self._db_get_sync, item_id)
+                if db_ok:
+                    if db_item is not None:
+                        self._items[db_item.id] = db_item
+                    return db_item
             return self._items.get(item_id)
 
     async def list_items(
@@ -291,6 +530,12 @@ class AttackModerationQueue:
     ) -> List[ModerationItem]:
         """List queue items with optional filtering and pagination."""
         async with self._lock:
+            if self._use_db:
+                db_ok, db_items = await asyncio.to_thread(
+                    self._db_list_sync, status, category, limit, offset
+                )
+                if db_ok:
+                    return db_items
             items = list(self._items.values())
 
         if status is not None:
@@ -305,6 +550,10 @@ class AttackModerationQueue:
     async def get_stats(self) -> Dict[str, Any]:
         """Return moderation queue statistics."""
         async with self._lock:
+            if self._use_db:
+                db_ok, db_stats = await asyncio.to_thread(self._db_stats_sync)
+                if db_ok:
+                    return db_stats
             items = list(self._items.values())
 
         total = len(items)

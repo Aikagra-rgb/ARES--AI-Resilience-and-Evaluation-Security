@@ -1,0 +1,412 @@
+@page "/redteam"
+@implements IDisposable
+@inject IAresApiClient Api
+@inject AresOperatorContext OperatorContext
+
+<PageTitle>Red-Team Operations · ARES</PageTitle>
+
+<section class="page-intro arena-intro">
+    <div>
+        <p class="eyebrow">Automated Adversarial Verification (Separate from ARES Arena)</p>
+        <h1>Red-Team Operations Lab</h1>
+        <p>Run automated multi-vector red-team campaigns directly against onboarded client LLM applications and runtime gateways—compare unprotected baseline breaches vs. ARES enforcement, export findings, and retrain per-client models.</p>
+    </div>
+    <div class="intro-meta" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+        <a class="button button-secondary" style="font-size:0.82rem;padding:0.4rem 0.8rem;" href="/redteam/custom">
+            🎯 Custom Prompt Evaluation
+        </a>
+        <a class="button button-secondary" style="font-size:0.82rem;padding:0.4rem 0.8rem;" href="/clients">
+            📊 Client ML Stats
+        </a>
+    </div>
+</section>
+
+<!-- Campaign Configuration Card -->
+<section class="surface-card" style="margin-top:1rem;border-left:4px solid #ef4444;">
+    <div class="section-heading compact" style="margin-bottom:0.85rem;">
+        <div>
+            <p class="eyebrow">Target Campaign Builder</p>
+            <h2>Configure Client Target Attack Matrix</h2>
+        </div>
+        <span class="subtle-code">@_clients.Count registered client target(s)</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:1rem;">
+        <div>
+            <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:0.35rem;">Target Client Organization</label>
+            <select class="category-select" style="width:100%;" @bind="_selectedOrgId" disabled="@(_isRunning || !_isAdmin)">
+                @if (_isAdmin)
+                {
+                    <option value="all">All Onboarded Targets (@_clients.Count clients)</option>
+                }
+                @foreach (var client in _clients)
+                {
+                    <option value="@client.OrgId">@client.DisplayName (@client.OrgId · @client.ModelVersion)</option>
+                }
+            </select>
+        </div>
+
+        <div>
+            <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:0.35rem;">Victim LLM Execution Mode</label>
+            <select class="category-select" style="width:100%;" @bind="_executionMode" disabled="@_isRunning">
+                <option value="simulator">Offline Deterministic Victim Simulator (Fast)</option>
+                <option value="ollama">Live Local Ollama Victim (llama3.2:3b)</option>
+            </select>
+        </div>
+    </div>
+
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-top:1rem;padding:0.75rem;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
+            <input type="checkbox" @bind="_compareBaseline" disabled="@_isRunning" />
+            <span>Compare Unprotected Baseline vs. ARES-Protected</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
+            <input type="checkbox" @bind="_exportFindings" disabled="@_isRunning" />
+            <span>Export Findings for Per-Client Retraining</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
+            <input type="checkbox" @bind="_autoRetrain" disabled="@_isRunning" />
+            <span>Auto-Retrain Selected Client After Campaign</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
+            <input type="checkbox" @bind="_syncQdrant" disabled="@_isRunning" />
+            <span>Sync Confirmed Attack Vectors to Qdrant</span>
+        </label>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_errorMessage))
+    {
+        <div style="margin-top:0.85rem;padding:0.75rem;background:rgba(239,68,68,0.15);border:1px solid #ef4444;border-radius:6px;color:#fca5a5;font-size:0.85rem;">
+            ⚠️ @_errorMessage
+        </div>
+    }
+
+    <div style="margin-top:1rem;display:flex;gap:0.75rem;align-items:center;">
+        <button class="button button-primary" disabled="@_isRunning" @onclick="RunCampaignAsync">
+            @if (_isRunning)
+            {
+                <span>⚔ Executing Red-Team Attack Matrix…</span>
+            }
+            else
+            {
+                <span>⚔ Launch Red-Team Campaign</span>
+            }
+        </button>
+        <a class="button button-secondary" href="/redteam/custom">Open Custom System Prompt Stress-Tester →</a>
+    </div>
+</section>
+
+@if (_runResult is not null)
+{
+    <!-- Campaign Summary KPI Grid -->
+    <section class="metric-grid" style="margin-top:1.5rem;" aria-label="Red-team campaign metrics">
+        <article class="surface-card metric-card">
+            <p class="eyebrow">ARES Catch Rate</p>
+            <p class="metric-value accent-green">@((_runResult.CatchRate * 100).ToString("F1"))%</p>
+            <p class="metric-desc">@_runResult.AttacksBlocked / @_runResult.TotalAttacks adversarial attacks blocked</p>
+        </article>
+        <article class="surface-card metric-card">
+            <p class="eyebrow">Baseline Breaches Prevented</p>
+            <p class="metric-value" style="color:#f87171;">@_runResult.BaselineBreaches</p>
+            <p class="metric-desc">Unguarded victim leaks stopped by ARES</p>
+        </article>
+        <article class="surface-card metric-card">
+            <p class="eyebrow">False Positive Rate</p>
+            <p class="metric-value" style="color:#38bdf8;">@((_runResult.FalsePositiveRate * 100).ToString("F1"))%</p>
+            <p class="metric-desc">@_runResult.FalsePositives / @_runResult.TotalBenign benign queries blocked</p>
+        </article>
+        <article class="surface-card metric-card">
+            <p class="eyebrow">Gateway Latency (P50 / P99)</p>
+            <p class="metric-value" style="color:#fcd34d;">@_runResult.LatencyP50Ms.ToString("F1") / @_runResult.LatencyP99Ms.ToString("F1") ms</p>
+            <p class="metric-desc">
+                Run <span class="subtle-code">@_runResult.RunId</span>
+                @if (_runResult.RetrainedOrgs.Count > 0)
+                {
+                    <span> · Retrained: @string.Join(", ", _runResult.RetrainedOrgs)</span>
+                }
+                @if (_runResult.QdrantVectorsUpserted > 0)
+                {
+                    <span> · Qdrant: @_runResult.QdrantVectorsUpserted vector(s)</span>
+                }
+                @if (_runResult.PersistedToDb)
+                {
+                    <span> · DB Saved</span>
+                }
+            </p>
+        </article>
+    </section>
+
+    <!-- Case-Level Matrix Results -->
+    <section class="surface-card" style="margin-top:1.5rem;">
+        <div class="section-heading compact" style="margin-bottom:0.75rem;">
+            <div>
+                <p class="eyebrow">Campaign Telemetry</p>
+                <h2>Attack &amp; Control Matrix Verdicts (@_filteredResults.Count() shown)</h2>
+            </div>
+            <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                <button class="button @(_filter == "all" ? "button-primary" : "button-secondary")"
+                        style="font-size:0.78rem;padding:0.25rem 0.65rem;"
+                        @onclick='() => _filter = "all"'>
+                    All Cases (@_runResult.Results.Count)
+                </button>
+                <button class="button @(_filter == "attacks" ? "button-primary" : "button-secondary")"
+                        style="font-size:0.78rem;padding:0.25rem 0.65rem;"
+                        @onclick='() => _filter = "attacks"'>
+                    Attacks Only (@_runResult.TotalAttacks)
+                </button>
+                <button class="button @(_filter == "benign" ? "button-primary" : "button-secondary")"
+                        style="font-size:0.78rem;padding:0.25rem 0.65rem;"
+                        @onclick='() => _filter = "benign"'>
+                    Benign Controls (@_runResult.TotalBenign)
+                </button>
+            </div>
+        </div>
+
+        <div class="history-table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Case ID</th>
+                        <th>Client Target</th>
+                        <th>Category</th>
+                        <th>Prompt Preview</th>
+                        <th>Baseline</th>
+                        <th>ARES Verdict</th>
+                        <th>Technique</th>
+                        <th>Canary Trap</th>
+                        <th>Latency</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in _filteredResults)
+                    {
+                        <tr>
+                            <td><span class="subtle-code">@item.CaseId</span></td>
+                            <td><strong>@item.TargetName</strong><br /><small>@item.OrgId</small></td>
+                            <td>@item.AttackCategory</td>
+                            <td style="max-width:300px;white-space:normal;font-size:0.8rem;opacity:0.88;">@item.QueryPreview</td>
+                            <td>
+                                @if (!item.ExpectedBlocked)
+                                {
+                                    <span style="color:#94a3b8;font-size:0.78rem;">CONTROL</span>
+                                }
+                                else if (item.BaselineCompromised)
+                                {
+                                    <span style="color:#f87171;font-weight:700;font-size:0.78rem;">COMPROMISED</span>
+                                }
+                                else
+                                {
+                                    <span style="color:#34d399;font-size:0.78rem;">SAFE</span>
+                                }
+                            </td>
+                            <td>
+                                <span style="font-weight:700;font-size:0.78rem;padding:2px 8px;border-radius:4px;@GetVerdictBadge(item.Action, item.ExpectedBlocked)">
+                                    @item.Action
+                                </span>
+                            </td>
+                            <td><span class="subtle-code">@(item.MatchedTechnique ?? "—")</span></td>
+                            <td>@(item.CanaryLeaked ? "⚠ Caught Outbound" : "Protected")</td>
+                            <td>@item.LatencyMs.ToString("F1") ms</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@if (_campaignHistory.Count > 0)
+{
+    <section class="surface-card" style="margin-top:1.5rem;">
+        <div class="section-heading compact" style="margin-bottom:0.75rem;">
+            <div>
+                <p class="eyebrow">PostgreSQL / SQLite Audit Trail</p>
+                <h2>Persisted Campaign History (@_campaignHistory.Count runs)</h2>
+            </div>
+        </div>
+        <div class="history-table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Run ID</th>
+                        <th>Target</th>
+                        <th>Catch Rate</th>
+                        <th>FP Rate</th>
+                        <th>Baseline Breaches</th>
+                        <th>Latency (P50 / P99)</th>
+                        <th>Qdrant</th>
+                        <th>Executed At</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var camp in _campaignHistory)
+                    {
+                        <tr>
+                            <td><span class="subtle-code">@camp.RunId</span></td>
+                            <td>@camp.OrgId</td>
+                            <td>@((camp.CatchRate * 100).ToString("F1"))% (@camp.AttacksBlocked/@camp.TotalAttacks)</td>
+                            <td>@((camp.FalsePositiveRate * 100).ToString("F1"))%</td>
+                            <td>@camp.BaselineBreaches</td>
+                            <td>@camp.LatencyP50Ms.ToString("F1") / @camp.LatencyP99Ms.ToString("F1") ms</td>
+                            <td>@camp.QdrantVectorsUpserted</td>
+                            <td><small>@camp.ExecutedAt</small></td>
+                            <td>
+                                <button class="button button-secondary"
+                                        style="font-size:0.76rem;padding:0.2rem 0.6rem;"
+                                        disabled="@_isRunning"
+                                        @onclick="() => LoadCampaignDetailAsync(camp.RunId)">
+                                    Load
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    private readonly CancellationTokenSource _cts = new();
+    private IReadOnlyList<ClientTenantSummary> _clients = Array.Empty<ClientTenantSummary>();
+    private IReadOnlyList<RedTeamCampaignSummary> _campaignHistory = Array.Empty<RedTeamCampaignSummary>();
+    private string _selectedOrgId = "all";
+    private string _executionMode = "simulator";
+    private bool _compareBaseline = true;
+    private bool _exportFindings = true;
+    private bool _autoRetrain;
+    private bool _syncQdrant;
+    private bool _isRunning;
+    private string? _errorMessage;
+    private string _filter = "all";
+    private RedTeamTargetRunResponse? _runResult;
+    private AresOperatorSession? _session;
+    private bool _isAdmin => _session?.IsAdmin ?? false;
+
+    private IEnumerable<RedTeamCaseResult> _filteredResults => _runResult is null
+        ? Enumerable.Empty<RedTeamCaseResult>()
+        : _filter switch
+        {
+            "attacks" => _runResult.Results.Where(r => r.ExpectedBlocked),
+            "benign" => _runResult.Results.Where(r => !r.ExpectedBlocked),
+            _ => _runResult.Results
+        };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _session = await OperatorContext.GetSessionAsync();
+        try
+        {
+            _clients = await Api.GetClientsAsync(_cts.Token);
+        }
+        catch
+        {
+            _clients = new List<ClientTenantSummary>
+            {
+                new("org_acme_fintech", "Acme Fintech RAG", "fintech", "AcmeFintechRAG", true, "CANARY_ACM...77", 0.75, 0.60, "v1.0"),
+                new("org_dev_ops_agent", "DevOps Tool Agent", "software", "DevOpsToolAgent", true, "CANARY_DEV...88", 0.75, 0.60, "v1.0"),
+                new("org_medshield_health", "MedShield HIPAA Triage", "healthcare", "MedShieldTriage", true, "CANARY_MED...99", 0.75, 0.60, "v1.0"),
+            };
+        }
+
+        if (_session is null)
+        {
+            _clients = Array.Empty<ClientTenantSummary>();
+        }
+        else if (!_session.IsAdmin && !string.IsNullOrWhiteSpace(_session.OrganizationId))
+        {
+            _clients = _clients.Where(c => _session.CanAccessOrganization(c.OrgId)).ToList();
+            _selectedOrgId = _session.OrganizationId;
+        }
+
+        await RefreshCampaignHistoryAsync();
+    }
+
+    private async Task RefreshCampaignHistoryAsync()
+    {
+        if (_session is null)
+        {
+            _campaignHistory = Array.Empty<RedTeamCampaignSummary>();
+            return;
+        }
+        try
+        {
+            var orgFilter = !_session.IsAdmin ? _session.OrganizationId : null;
+            _campaignHistory = await Api.GetRedTeamCampaignsAsync(orgFilter, 15, _cts.Token);
+        }
+        catch
+        {
+            _campaignHistory = Array.Empty<RedTeamCampaignSummary>();
+        }
+    }
+
+    private async Task RunCampaignAsync()
+    {
+        _errorMessage = null;
+        _isRunning = true;
+        try
+        {
+            var req = new RedTeamTargetRunRequest(
+                OrgId: _selectedOrgId,
+                UseMockLlm: _executionMode == "simulator",
+                CompareBaseline: _compareBaseline,
+                ExportFindings: _exportFindings,
+                AutoRetrain: _autoRetrain,
+                SyncQdrant: _syncQdrant
+            );
+            _runResult = await Api.RunClientRedTeamAsync(req, _cts.Token);
+            if (_autoRetrain && _runResult.RetrainedOrgs.Count > 0)
+            {
+                _clients = await Api.GetClientsAsync(_cts.Token);
+            }
+            await RefreshCampaignHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Red-team campaign failed: {ex.Message}";
+        }
+        finally
+        {
+            _isRunning = false;
+        }
+    }
+
+    private async Task LoadCampaignDetailAsync(string runId)
+    {
+        _errorMessage = null;
+        try
+        {
+            var detail = await Api.GetRedTeamCampaignDetailAsync(runId, _cts.Token);
+            if (detail is not null)
+            {
+                _runResult = detail;
+                _filter = "all";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Failed loading campaign '{runId}': {ex.Message}";
+        }
+    }
+
+    private static string GetVerdictBadge(string action, bool expectedBlocked)
+    {
+        var act = action.ToUpperInvariant();
+        if (expectedBlocked)
+        {
+            return act is "BLOCK" or "SANITIZE"
+                ? "background:rgba(16,185,129,0.2);color:#34d399;border:1px solid #10b981;"
+                : "background:rgba(239,68,68,0.2);color:#f87171;border:1px solid #ef4444;";
+        }
+        return act == "ALLOW"
+            ? "background:rgba(56,189,248,0.2);color:#38bdf8;border:1px solid #38bdf8;"
+            : "background:rgba(245,158,11,0.2);color:#fcd34d;border:1px solid #f59e0b;";
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

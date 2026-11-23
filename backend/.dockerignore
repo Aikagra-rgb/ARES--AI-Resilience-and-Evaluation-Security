@@ -7,7 +7,11 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-tests/
+tests/*
+!tests/__init__.py
+!tests/targets/
+!tests/redteam/
+!tests/redteam/
 scripts/
 scratch_*.py
 *.db

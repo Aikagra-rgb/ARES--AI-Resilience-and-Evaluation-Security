@@ -8,10 +8,30 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379
       - ARES_LORA_SERVER_URL=http://lora-inference:11435/v1
+      - ARES_API_KEY=${ARES_API_KEY:-ares-dev-secret-key-42}
+      - ARES_TENANT_API_KEYS=${ARES_TENANT_API_KEYS:-}
     depends_on:
       - postgres
       - qdrant
       - redis
+
+  blazor-web:
+    build: ./src/Ares.Web
+    ports:
+      - "5149:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - Ares__ApiBaseUrl=http://fastapi:8000
+      - Ares__ApiKey=${ARES_API_KEY:-ares-dev-secret-key-42}
+      - Ares__TenantApiKeys=${ARES_TENANT_API_KEYS:-}
+      - DataProtection__KeysPath=/var/lib/ares/keys
+      - Ares__PersistSessions=true
+      - Ares__RequireHttpsCookie=${ARES_REQUIRE_HTTPS_COOKIE:-false}
+      - Ares__DisableHttpsRedirection=${ARES_DISABLE_HTTPS_REDIRECTION:-true}
+    volumes:
+      - ares_web_keys:/var/lib/ares/keys
+    depends_on:
+      - fastapi
 
   lora-inference:
     build:
@@ -27,6 +47,21 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  targets:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.target
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://ares:password@postgres:5432/ares
+      - ARES_GATEWAY_URL=http://fastapi:8000
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - ARES_TARGET_MOCK_LLM=${ARES_TARGET_MOCK_LLM:-0}
+    depends_on:
+      - fastapi
+      - postgres
 
   postgres:
     image: postgres:16-alpine
@@ -53,8 +88,21 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    environment:
+      - ARES_API_KEY=${ARES_API_KEY:-ares-dev-secret-key-42}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$ARES_API_KEY" > /tmp/ares_metrics_token
+        chmod 600 /tmp/ares_metrics_token
+        exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=15d
     ports:
       - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - fastapi
 
   grafana:
     image: grafana/grafana:latest
@@ -64,8 +112,12 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - ares_grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
 
 volumes:
   ares_postgres_data:
   ares_qdrant_data:
   ares_grafana_data:
+  ares_web_keys:

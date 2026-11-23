@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    mem_limit: 512m
+    environment:
+      POSTGRES_DB: ares_test
+      POSTGRES_USER: ares
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ares_test_password}
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ares -d ares_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    mem_limit: 1024m
+    ports:
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    build: ./backend
+    mem_limit: 2048m
+    environment:
+      ENVIRONMENT: test
+      ARES_AUTH_ENABLED: "false"
+      ALLOW_DEV_IDENTITY: "true"
+      ARES_API_KEY: ${ARES_API_KEY:-ares-test-suite-secret-key-24-chars}
+      DATABASE_URL: postgresql+psycopg://ares:${POSTGRES_PASSWORD:-ares_test_password}@postgres:5432/ares_test
+      AUTO_CREATE_SCHEMA: "true"
+      PROMPT_FINGERPRINT_SECRET: ${PROMPT_FINGERPRINT_SECRET:-ares-test-fingerprint-secret-value}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ares_attacks}
+      PREFER_LOCAL_EMBEDDINGS: ${PREFER_LOCAL_EMBEDDINGS:-false}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_DEFAULT_MODEL:-llama3.2:3b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  targets:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.target
+    mem_limit: 256m
+    environment:
+      ENVIRONMENT: test
+      ARES_AUTH_ENABLED: "false"
+      ALLOW_DEV_IDENTITY: "true"
+      DATABASE_URL: postgresql+psycopg://ares:${POSTGRES_PASSWORD:-ares_test_password}@postgres:5432/ares_test
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      ARES_TARGET_MODEL: ${OLLAMA_DEFAULT_MODEL:-llama3.2:3b}
+      ARES_TARGET_MOCK_LLM: ${ARES_TARGET_MOCK_LLM:-0}
+      ARES_GATEWAY_URL: http://gateway:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy

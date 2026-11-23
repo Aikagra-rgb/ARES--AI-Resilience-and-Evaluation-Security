@@ -328,7 +328,11 @@ public sealed record OptimizePromptRequest(
     string Prompt,
     string? Domain = null,
     double? TargetFidelity = null,
-    bool AllowHarmful = false);
+    bool AllowHarmful = false,
+    string? OrgId = null,
+    bool PreferRuleCompression = false,
+    string? InferenceMode = "auto",
+    string? ModelName = null);
 
 public sealed record OptimizePromptResponse(
     string Status,
@@ -349,7 +353,13 @@ public sealed record OptimizePromptResponse(
     string? Reasoning,
     double TargetFidelity = 0.85,
     bool VerificationPassed = true,
-    IReadOnlyList<string>? MitigatedThreats = null);
+    IReadOnlyList<string>? MitigatedThreats = null,
+    string OrgId = "default",
+    string ClassifierUsed = "global-sklearn",
+    string CompressionEngine = "auto",
+    bool ClientAdapterApplied = false,
+    bool ProtectedTermsPreserved = true,
+    IReadOnlyList<string>? MissingProtectedTerms = null);
 
 public sealed record IntentInfoResponse(
     string Intent,
@@ -358,6 +368,86 @@ public sealed record IntentInfoResponse(
     IReadOnlyList<string> PreservationRules,
     IReadOnlyList<string> PruningRules,
     IReadOnlyList<string> StructuralEnforcements);
+
+// ── Multi-Tenant Client & Dedicated Red-Team DTOs ───────────────────────────
+public sealed record ClientTenantSummary(
+    string OrgId,
+    string DisplayName,
+    string Domain,
+    string ApplicationName,
+    bool CanaryConfigured,
+    string? CanaryTokenPreview,
+    double BlockThreshold,
+    double SanitizeThreshold,
+    string ModelVersion,
+    string? IntentModel = null,
+    string? CompressionAdapter = null,
+    Dictionary<string, double>? FidelityThresholds = null,
+    bool TargetEndpointConfigured = false,
+    string? TargetEndpointUrl = null,
+    string TargetRequestFormat = "openai_chat",
+    string? TargetModel = null,
+    bool TenantApiKeyConfigured = false);
+
+public sealed record RedTeamTargetRunRequest(
+    string OrgId = "all",
+    bool UseMockLlm = true,
+    bool CompareBaseline = true,
+    bool ExportFindings = true,
+    bool AutoRetrain = false,
+    bool SyncQdrant = false);
+
+public sealed record RedTeamCaseResult(
+    string CaseId,
+    string OrgId,
+    string TargetName,
+    string AttackCategory,
+    string QueryPreview,
+    bool ExpectedBlocked,
+    bool BaselineCompromised,
+    bool ProtectedBlocked,
+    string Action,
+    string? MatchedTechnique,
+    bool CanaryLeaked,
+    double LatencyMs);
+
+public sealed record RedTeamTargetRunResponse(
+    string RunId,
+    string OrgId,
+    string ExecutedAt,
+    bool UseMockLlm,
+    int TotalAttacks,
+    int AttacksBlocked,
+    double CatchRate,
+    int TotalBenign,
+    int FalsePositives,
+    double FalsePositiveRate,
+    int BaselineBreaches,
+    [property: System.Text.Json.Serialization.JsonPropertyName("latency_p50_ms")] double LatencyP50Ms,
+    [property: System.Text.Json.Serialization.JsonPropertyName("latency_p99_ms")] double LatencyP99Ms,
+    bool FindingsExported,
+    IReadOnlyList<string> RetrainedOrgs,
+    IReadOnlyList<RedTeamCaseResult> Results,
+    int QdrantVectorsUpserted = 0,
+    bool PersistedToDb = false);
+
+public sealed record RedTeamCampaignSummary(
+    string RunId,
+    string OrgId,
+    string ExecutedAt,
+    bool UseMockLlm,
+    int TotalAttacks,
+    int AttacksBlocked,
+    double CatchRate,
+    int TotalBenign,
+    int FalsePositives,
+    double FalsePositiveRate,
+    int BaselineBreaches,
+    [property: System.Text.Json.Serialization.JsonPropertyName("latency_p50_ms")] double LatencyP50Ms,
+    [property: System.Text.Json.Serialization.JsonPropertyName("latency_p99_ms")] double LatencyP99Ms,
+    bool FindingsExported,
+    int QdrantVectorsUpserted,
+    IReadOnlyList<string> RetrainedOrgs);
 
 
 

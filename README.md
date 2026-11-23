@@ -47,8 +47,19 @@ ARES is an enterprise-grade AI security gateway, resilience testing engine, and 
 - Multi-provider LLM-as-a-judge evaluation scoring with structured audit logging.
 
 ### 4. Interactive Blazor Server UI (.NET 8.0)
-- Single-page management console: Overview Dashboard, Security Gateway live tester, Prompt Optimizer studio, and Red Team Arena.
+- Single-page management console: Overview Dashboard, Security Gateway live tester, Prompt Optimizer studio, Red Team Arena, **Client Tenants & ML Stats** (`/clients`), and **Settings & Governance** (`/settings`).
 - Built exclusively with Blazor Interactive Server for security (no client-side API key leakage).
+
+### 5. Multi-Tenant Client Models, Targets & Partner Deployment
+- **Reference Client Target Applications (`:8001`)**: Three isolated multi-tenant LLM applications (`org_acme_fintech` Finance RAG, `org_dev_ops_agent` DevOps Tool Agent, and `org_medshield_health` HIPAA Triage Assistant) mounted in `backend/tests/targets/`.
+- **Per-Client Model Training & ML Evaluation Statistics**: Train organization-specific threat detectors, 5-class intent routers, and domain compression adapters in seconds, computing 5-fold stratified CV accuracy, macro/weighted precision, recall, F1, and confusion matrices (`backend/data/client_models_ml_stats.json`, `GET /api/v1/clients/{org_id}/stats`):
+  ```bash
+  PYTHONPATH=backend python -m ares.training.client_model_trainer --org=all
+  ```
+- **Partner Sidecar Deployment (`deploy_partner.sh`)**: Generates partner `.env.partner.<org_id>` bundles paired with `docker-compose.full.yml` (or custom `--compose-file=...`):
+  ```bash
+  ./deploy_partner.sh --org=org_acme_fintech --api-key=YOUR_KEY --compose-file=docker-compose.full.yml
+  ```
 
 ---
 
@@ -107,6 +118,10 @@ python launch.py
 python launch.py both
 .\launch.ps1 both
 
+# Launch Backend (:8000) + Frontend (:5149) + Reference Client Targets (:8001)
+python launch.py suite
+python launch.py suite --sqlite --mock-targets   # Laptop-safe local SQLite + offline simulator
+
 # Launch Backend only (FastAPI on http://127.0.0.1:8000)
 python launch.py backend
 .\launch.ps1 backend
@@ -115,7 +130,11 @@ python launch.py backend
 python launch.py frontend
 .\launch.ps1 frontend
 
-# Launch Full Stack (Frontend + Backend + LoRA Inference Server on :11435)
+# Launch Client Targets only (:8001)
+python launch.py targets --mock-targets
+.\launch.ps1 targets -MockTargets
+
+# Launch Full Stack (Frontend + Backend + Client Targets + LoRA Inference Server on :11435)
 python launch.py all
 .\launch.ps1 all
 
@@ -126,17 +145,18 @@ python launch.py lora
 python launch.py status
 .\launch.ps1 status
 
-# Free all ARES ports (terminate orphaned processes holding 8000, 5149, or 11435)
+# Free all ARES ports (terminate orphaned processes holding 8000, 5149, 8001, or 11435)
 python launch.py clean
 .\launch.ps1 clean
 ```
 
 ### Key Launcher Features
-- **Concurrent Execution & Multiplexed Logging**: Runs frontend and backend in unified terminal stream with colored, timestamped service tags (`[BACKEND]`, `[FRONTEND]`, `[LORA]`).
-- **Readiness Probing**: Automatically probes `http://127.0.0.1:8000/health` on startup, verifying database connectivity and vector stores before outputting a clickable service dashboard card.
+- **Concurrent Execution & Multiplexed Logging**: Runs frontend, backend, targets, and LoRA inference in unified terminal stream with colored, timestamped service tags (`[BACKEND]`, `[FRONTEND]`, `[TARGETS]`, `[LORA]`).
+- **Automatic Database Readiness**: Checks PostgreSQL connectivity, attempts to start a Docker PostgreSQL container if Docker is running, and safely falls back to local SQLite (`ares.db`) in development unless `--require-postgres` is passed.
+- **Readiness Probing**: Probes lightweight `http://127.0.0.1:8000/health` (and `:8001/healthz` for Client Targets) on startup before printing a clickable service card; deep dependency checks live at `/healthz`.
 - **Clean Process Lifecycle**: Handles SIGINT/Ctrl+C signals cleanly and terminates entire child process trees, preventing orphaned uvicorn or dotnet processes from blocking development ports.
-- **Automatic Port Conflict Resolution**: Automatically detects and frees ports `8000`, `5149`, and `11435` before starting new instances.
-- **Environment Autodetection**: Automatically locates virtual environments (`venv`, `.venv`), sets `PYTHONPATH=backend`, and detects the .NET 8.0 SDK.
+- **Automatic Port Conflict Resolution**: Automatically detects and frees ports `8000`, `5149`, `8001`, and `11435` before starting new instances.
+- **Lock-Safe Frontend Builds**: Automatically passes `--no-restore` when `obj/project.assets.json` exists to prevent NuGet lock contention on repeated Windows launches.
 
 ---
 
@@ -231,7 +251,8 @@ dotnet test Ares.sln --configuration Release
 
 | Decision | Rationale |
 | :--- | :--- |
-| **PostgreSQL-Only** | Guarantees schema consistency across local dev, CI service containers, and production. |
+| **PostgreSQL in Prod + Dev SQLite Fallback** | Enforces PostgreSQL in production (`ENVIRONMENT != development`), while allowing local dev/test to use SQLite when Docker/Postgres is stopped. |
+| **Lazy Pooled Vector Store & Async Probes** | `QdrantStore.__init__` performs zero I/O, pools remote/local clients, and keeps `/health` + `/healthz` non-blocking. |
 | **Severity-Max Gateway** | Deterministic attack hits cannot be overridden by benign semantic similarity. |
 | **Fail-Closed Embeddings** | Prevents degraded or hash-fallback vectors from bypassing threat shields. |
 | **Blazor Interactive Server** | Eliminates client-side secrets and minimizes attack surface by executing logic server-side. |
@@ -245,4 +266,4 @@ dotnet test Ares.sln --configuration Release
 - [Architecture Decisions](docs/architecture-decisions.md): Detailed ADR logs on data stores and routing policies.
 - [API Contracts](docs/api-contracts.md): FastAPI REST endpoints and request/response specifications.
 
-*Updated: October 2026*
+*Updated: November 2026*

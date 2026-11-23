@@ -1,0 +1,204 @@
+{
+  "uid": "ares-security-optimizer",
+  "title": "ARES Security & Prompt Optimizer",
+  "tags": ["ares", "security", "gateway", "optimizer", "llm"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Gateway Enforcement Decisions (req/s by Action)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (action) (rate(ares_gateway_requests_total[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "fillOpacity": 15 }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Gateway Latency Percentiles (P50 / P95 / P99)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ares_gateway_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ares_gateway_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ares_gateway_latency_seconds_bucket[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "Blocked Threats by Application & Technique (1h)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (application, technique) (increase(ares_gateway_blocks_total[1h]))",
+          "legendFormat": "{{application}} · {{technique}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Prompt Optimizer Throughput by Intent & Status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (intent, status) (rate(ares_optimization_requests_total[5m]))",
+          "legendFormat": "{{intent}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Average Token Savings %",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (sum(rate(ares_token_savings_pct_sum[15m])) / clamp_min(sum(rate(ares_token_savings_pct_count[15m])), 1e-6))",
+          "legendFormat": "Token Savings %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Average Semantic Fidelity",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(ares_semantic_fidelity_sum[15m])) / clamp_min(sum(rate(ares_semantic_fidelity_count[15m])), 1e-6)",
+          "legendFormat": "Semantic Fidelity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 3
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Moderation Queue Lifecycle (Submitted / Approved / Rejected)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "increase(ares_moderation_submitted_total[1h])",
+          "legendFormat": "Submitted"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(ares_moderation_approved_total[1h])",
+          "legendFormat": "Approved"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(increase(ares_moderation_rejected_total[1h]))",
+          "legendFormat": "Rejected"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Downstream LLM Calls & Failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ares-prometheus"
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 22 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider, status) (rate(ares_llm_calls_total[5m]))",
+          "legendFormat": "{{provider}} ({{status}})"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (provider) (rate(ares_llm_call_failures_total[5m]))",
+          "legendFormat": "{{provider}} failures"
+        }
+      ]
+    }
+  ]
+}

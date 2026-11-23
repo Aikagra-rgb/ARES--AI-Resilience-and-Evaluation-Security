@@ -1,12 +1,53 @@
 @page "/settings"
+@using System.Globalization
+@using System.Net.Http.Json
+@using System.Text.Json
+@inject IHttpClientFactory HttpClientFactory
+@inject IConfiguration Config
+@inject AresOperatorContext OperatorContext
 
 <PageTitle>Settings · ARES</PageTitle>
 
-<section class="planned-module">
-    <p class="eyebrow">ARES Operations</p>
-    <h1>Settings & Governance</h1>
-    <p>Configure security thresholds, API keys, provider failover routing, and canary tokens.</p>
-    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:1.5rem">
+<section class="page-intro dashboard-intro">
+    <div>
+        <p class="eyebrow">ARES Operations &amp; Governance</p>
+        <h1>Settings &amp; Governance</h1>
+        <p>Inspect backend dependency health, per-tenant gateway security thresholds, canary trap status, and quick-launch operational modules.</p>
+    </div>
+    <div class="intro-meta">
+        <span>Backend Status</span>
+        <strong>@_backendStatus</strong>
+        <button class="text-button" @onclick="LoadGovernanceAsync">Refresh</button>
+    </div>
+</section>
+
+<section class="metric-grid" aria-label="Governance summary">
+    <article class="surface-card metric-card">
+        <p class="eyebrow">API Service</p>
+        <p class="metric-value @(_backendOnline ? "accent-green" : "")">@_backendStatus</p>
+        <p class="metric-desc">@_apiBaseUrl</p>
+    </article>
+    <article class="surface-card metric-card">
+        <p class="eyebrow">Configured LLM Providers</p>
+        <p class="metric-value" style="font-size:1.25rem;">@_providersSummary</p>
+        <p class="metric-desc">DB: @_databaseStatus · Qdrant: @_qdrantStatus</p>
+    </article>
+    <article class="surface-card metric-card">
+        <p class="eyebrow">Active Operator Scope</p>
+        <p class="metric-value" style="font-size:1.15rem;">@(_session?.ScopeLabel ?? "Unauthenticated")</p>
+        <p class="metric-desc">@(_session?.Email ?? "Sign in required") · @_tenants.Count tenant(s) visible</p>
+    </article>
+</section>
+
+<section class="surface-card" style="margin-top:1.5rem;">
+    <div class="section-heading compact">
+        <div>
+            <p class="eyebrow">Operational Navigation</p>
+            <h2>Platform Modules</h2>
+        </div>
+    </div>
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem">
+        <a class="button button-primary" href="/clients">Client Tenants &amp; ML Stats</a>
         <a class="button button-primary" href="/optimizer">Prompt Optimizer</a>
         <a class="button button-primary" href="/gateway">Enforcement Gateway</a>
         <a class="button button-secondary" href="/arena">ARES Arena</a>
@@ -16,6 +57,183 @@
     </div>
 </section>
 
+<section class="surface-card" style="margin-top:1.5rem;">
+    <div class="section-heading compact">
+        <div>
+            <p class="eyebrow">Read-Only Policy Snapshot</p>
+            <h2>Tenant Policy &amp; Threshold Overview</h2>
+        </div>
+    </div>
+    <div class="history-table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Org ID</th>
+                    <th>Domain</th>
+                    <th>Block Threshold</th>
+                    <th>Sanitize Threshold</th>
+                    <th>Model Version</th>
+                    <th>Canary Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var tenant in _tenants)
+                {
+                    <tr>
+                        <td><span class="subtle-code">@tenant.OrgId</span></td>
+                        <td>@tenant.Domain</td>
+                        <td>@tenant.BlockThreshold.ToString("0.00", CultureInfo.InvariantCulture)</td>
+                        <td>@tenant.SanitizeThreshold.ToString("0.00", CultureInfo.InvariantCulture)</td>
+                        <td>@tenant.ModelVersion</td>
+                        <td>
+                            @if (tenant.CanaryConfigured)
+                            {
+                                <span class="subtle-code">Active (@(tenant.CanaryTokenPreview ?? "armed"))</span>
+                            }
+                            else
+                            {
+                                <span>Not configured</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
 @code {
+    private sealed record TenantPolicyRow(
+        string OrgId,
+        string Domain,
+        double BlockThreshold,
+        double SanitizeThreshold,
+        string ModelVersion,
+        bool CanaryConfigured,
+        string? CanaryTokenPreview
+    );
+
+    private string _apiBaseUrl = "http://localhost:8000";
+    private bool _backendOnline;
+    private string _backendStatus = "checking...";
+    private string _databaseStatus = "unknown";
+    private string _qdrantStatus = "unknown";
+    private string _providersSummary = "offline";
+    private List<TenantPolicyRow> _tenants = new();
+    private AresOperatorSession? _session;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _session = await OperatorContext.GetSessionAsync();
+        _apiBaseUrl = (Config["Ares:ApiBaseUrl"] ?? "http://localhost:8000").TrimEnd('/');
+        await LoadGovernanceAsync();
+    }
+
+    private Task<HttpClient> CreateApiClientAsync(bool requireAuth = true)
+        => OperatorContext.CreateScopedApiClientAsync(HttpClientFactory, Config, requireAuth: requireAuth);
+
+    private async Task LoadGovernanceAsync()
+    {
+        _session ??= await OperatorContext.GetSessionAsync();
+        await LoadHealthAsync();
+        await LoadTenantPoliciesAsync();
+    }
+
+    private async Task LoadHealthAsync()
+    {
+        try
+        {
+            using var http = await CreateApiClientAsync(requireAuth: false);
+            var json = await http.GetFromJsonAsync<JsonElement>("healthz");
+            _backendOnline = true;
+            _backendStatus = json.TryGetProperty("status", out var statusProp)
+                ? (statusProp.GetString() ?? "ok")
+                : "ok";
+
+            if (json.TryGetProperty("checks", out var checks) && checks.ValueKind == JsonValueKind.Object)
+            {
+                _databaseStatus = ReadCheckStatus(checks, "database");
+                _qdrantStatus = ReadCheckStatus(checks, "qdrant");
+
+                if (checks.TryGetProperty("llm_providers", out var llm)
+                    && llm.ValueKind == JsonValueKind.Object
+                    && llm.TryGetProperty("configured", out var cfgArr)
+                    && cfgArr.ValueKind == JsonValueKind.Array)
+                {
+                    var providers = cfgArr.EnumerateArray()
+                        .Select(e => e.GetString())
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .ToList();
+                    _providersSummary = providers.Count > 0 ? string.Join(", ", providers) : "none configured";
+                }
+                else
+                {
+                    _providersSummary = "none configured";
+                }
+            }
+            return;
+        }
+        catch
+        {
+            // Fallback offline status when backend API is unreachable
+        }
+
+        _backendOnline = false;
+        _backendStatus = "offline";
+        _databaseStatus = "unreachable";
+        _qdrantStatus = "unreachable";
+        _providersSummary = "offline";
+    }
+
+    private static string ReadCheckStatus(JsonElement checks, string name)
+    {
+        if (checks.TryGetProperty(name, out var block)
+            && block.ValueKind == JsonValueKind.Object
+            && block.TryGetProperty("status", out var s))
+        {
+            return s.GetString() ?? "unknown";
+        }
+        return "unknown";
+    }
+
+    private List<TenantPolicyRow> FilterForSession(List<TenantPolicyRow> rows)
+    {
+        if (_session is null) return new List<TenantPolicyRow>();
+        return _session.IsAdmin
+            ? rows
+            : rows.Where(r => _session.CanAccessOrganization(r.OrgId)).ToList();
+    }
+
+    private async Task LoadTenantPoliciesAsync()
+    {
+        if (_session is null)
+        {
+            _tenants = new List<TenantPolicyRow>();
+            return;
+        }
+        try
+        {
+            using var http = await CreateApiClientAsync(requireAuth: true);
+            var opts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+            var rows = await http.GetFromJsonAsync<List<TenantPolicyRow>>("api/v1/clients", opts);
+            if (rows is not null && rows.Count > 0)
+            {
+                _tenants = FilterForSession(rows);
+                return;
+            }
+        }
+        catch
+        {
+            // Offline preview fallback matching the 3 reference client profiles
+        }
+
+        var fallback = new List<TenantPolicyRow>
+        {
+            new("org_acme_fintech", "fintech", 0.75, 0.60, "v1.0", true, "CANARY_ACM...77"),
+            new("org_dev_ops_agent", "software", 0.75, 0.60, "v1.0", true, "CANARY_DEV...88"),
+            new("org_medshield_health", "healthcare", 0.75, 0.60, "v1.0", true, "CANARY_MED...99"),
+        };
+        _tenants = FilterForSession(fallback);
+    }
 }
 

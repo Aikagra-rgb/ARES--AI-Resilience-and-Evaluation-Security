@@ -5,9 +5,11 @@ ARES Launching Terminal Engine.
 Unified process launcher for the ARES platform:
 - Frontend (.NET 8.0 Blazor Server in src/Ares.Web on http://localhost:5149)
 - Backend (FastAPI in backend on http://127.0.0.1:8000)
-- Both (concurrent execution with prefixed logs, readiness probe, clean Ctrl+C shutdown)
+- Targets (Reference Client LLM Apps in tests.targets:app on http://127.0.0.1:8001)
+- Both (Frontend + Backend with prefixed logs, readiness probe, clean Ctrl+C shutdown)
+- Suite (Frontend + Backend + Client Targets)
 - LoRA (PEFT inference server on http://localhost:11435)
-- All (Frontend + Backend + LoRA full stack)
+- All (Frontend + Backend + Client Targets + LoRA full stack)
 """
 
 from __future__ import annotations
@@ -25,11 +27,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Default configurations
 DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 5149
+DEFAULT_TARGETS_PORT = 8001
 DEFAULT_LORA_PORT = 11435
+DEFAULT_POSTGRES_PORT = 5432
 DEFAULT_HOST = "127.0.0.1"
 HEALTH_CHECK_TIMEOUT = 45.0
 HEALTH_CHECK_INTERVAL = 0.5
@@ -132,7 +137,7 @@ def detect_environment(repo_root: Path | None = None) -> EnvironmentInfo:
             is_valid = False
             try:
                 res = subprocess.run(
-                    [str(candidate), "-c", "import sys, ssl; print(sys.version.split()[0])"],
+                    [str(candidate), "-c", "import sys, ssl, ctypes; print(sys.version.split()[0])"],
                     capture_output=True,
                     text=True,
                     timeout=3,
@@ -380,6 +385,8 @@ def build_child_env(env_info: EnvironmentInfo) -> dict[str, str]:
     """Construct environment variables for spawned child processes."""
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
+    # Suppress noisy Intel Fortran/MKL `forrtl: error (200)` abort traces on Windows Ctrl+C/BREAK
+    child_env.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
 
     # Configure PYTHONPATH to prioritize backend and site-packages
     pythonpaths = [str(env_info.backend_dir)]
@@ -401,6 +408,181 @@ def build_child_env(env_info: EnvironmentInfo) -> dict[str, str]:
         child_env["VIRTUAL_ENV"] = str(env_info.venv_path)
 
     return child_env
+
+
+def _is_tcp_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Return True if a TCP service accepts connections on `(host, port)`."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def read_configured_database_url(env_info: EnvironmentInfo) -> str | None:
+    """Resolve `DATABASE_URL` from environment or `.env` files (without logging credentials)."""
+    env_val = os.environ.get("DATABASE_URL")
+    if env_val and env_val.strip():
+        return env_val.strip().strip('"').strip("'")
+
+    for env_file in (env_info.repo_root / ".env", env_info.backend_dir / ".env"):
+        if not env_file.is_file():
+            continue
+        try:
+            for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() == "DATABASE_URL":
+                    cleaned = value.strip().strip('"').strip("'")
+                    if cleaned:
+                        return cleaned
+        except OSError:
+            pass
+    return None
+
+
+def _try_start_docker_postgres(
+    env_info: EnvironmentInfo,
+    db_host: str,
+    db_port: int,
+    timeout: float = 15.0,
+) -> bool:
+    """Attempt to start an existing Docker PostgreSQL container or compose `postgres` service."""
+    docker_cli = shutil.which("docker")
+    if not docker_cli:
+        return False
+
+    try:
+        info_res = subprocess.run(
+            [docker_cli, "info"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        if info_res.returncode != 0:
+            return False
+    except Exception:
+        return False
+
+    container_name: str | None = None
+    try:
+        ps_res = subprocess.run(
+            [docker_cli, "ps", "-a", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if ps_res.returncode == 0:
+            candidates: list[str] = []
+            for line in ps_res.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                c_name, c_image = parts[0].strip(), parts[1].strip().lower()
+                if "postgres" in c_image or "postgres" in c_name.lower():
+                    candidates.append(c_name)
+            if candidates:
+                candidates.sort(key=lambda name: (0 if "ares" in name.lower() else 1, name))
+                container_name = candidates[0]
+    except Exception:
+        pass
+
+    started = False
+    try:
+        if container_name:
+            log_message("DB", f"Starting existing Docker PostgreSQL container '{container_name}'...", Colors.CYAN)
+            res = subprocess.run(
+                [docker_cli, "start", container_name],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            started = res.returncode == 0
+        elif (env_info.repo_root / "docker-compose.full.yml").is_file():
+            log_message("DB", "Starting PostgreSQL via docker-compose.full.yml...", Colors.CYAN)
+            res = subprocess.run(
+                [docker_cli, "compose", "-f", "docker-compose.full.yml", "up", "-d", "postgres"],
+                cwd=str(env_info.repo_root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            started = res.returncode == 0
+    except Exception:
+        return False
+
+    if not started:
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_tcp_reachable(db_host, db_port, timeout=1.0):
+            return True
+        time.sleep(0.5)
+    return _is_tcp_reachable(db_host, db_port, timeout=1.0)
+
+
+def ensure_database_ready(
+    env_info: EnvironmentInfo,
+    *,
+    require_postgres: bool = False,
+    use_sqlite: bool = False,
+    startup_timeout: float = 15.0,
+) -> tuple[dict[str, str], str]:
+    """Ensure a database is reachable for backend/targets, auto-starting Docker PG or falling back to SQLite."""
+    sqlite_file = env_info.repo_root / "ares.db"
+    sqlite_path = sqlite_file.as_posix()
+    sqlite_url = f"sqlite:///{sqlite_path}"
+    sqlite_env = {
+        "DATABASE_URL": sqlite_url,
+        "AUTO_CREATE_SCHEMA": "true",
+        "ENVIRONMENT": "development",
+    }
+
+    if use_sqlite:
+        log_message("DB", f"Using local SQLite database: {sqlite_path}", Colors.CYAN)
+        return sqlite_env, f"SQLite ({env_info.repo_root.name}/ares.db)"
+
+    configured_url = read_configured_database_url(env_info)
+    if not configured_url:
+        log_message("DB", f"No DATABASE_URL configured; using local SQLite: {sqlite_path}", Colors.YELLOW)
+        return sqlite_env, "SQLite (ares.db)"
+
+    if configured_url.startswith("sqlite"):
+        return {}, "SQLite"
+
+    parsed = urlparse(configured_url)
+    db_host = parsed.hostname or "127.0.0.1"
+    db_port = parsed.port or DEFAULT_POSTGRES_PORT
+
+    if _is_tcp_reachable(db_host, db_port, timeout=1.0):
+        log_message("DB", f"PostgreSQL reachable at {db_host}:{db_port}", Colors.GREEN)
+        return {}, f"PostgreSQL ({db_host}:{db_port})"
+
+    if db_host in ("127.0.0.1", "localhost", "::1"):
+        if _try_start_docker_postgres(env_info, db_host, db_port, timeout=startup_timeout):
+            log_message("DB", f"PostgreSQL ready at {db_host}:{db_port}", Colors.BRIGHT_GREEN)
+            return {}, f"PostgreSQL ({db_host}:{db_port}, Docker)"
+
+    if require_postgres:
+        raise RuntimeError(
+            f"PostgreSQL is unreachable at {db_host}:{db_port}. "
+            "Start Docker Desktop / PostgreSQL or omit --require-postgres to use local SQLite fallback."
+        )
+
+    log_message(
+        "DB",
+        f"PostgreSQL unreachable at {db_host}:{db_port} (Docker stopped/unavailable). "
+        f"Falling back to local SQLite: {sqlite_path}",
+        Colors.YELLOW,
+    )
+    return sqlite_env, "SQLite fallback (ares.db)"
 
 
 @dataclass
@@ -551,22 +733,18 @@ class ProcessManager:
         return 0
 
 
-def probe_backend_health(
+def _poll_http_health(
     health_url: str,
-    backend_port: int,
-    frontend_port: int | None = None,
-    lora_port: int | None = None,
-    timeout: float = HEALTH_CHECK_TIMEOUT,
-    interval: float = HEALTH_CHECK_INTERVAL,
+    timeout: float,
+    interval: float,
     stop_event: threading.Event | None = None,
-) -> bool:
-    """Poll backend health endpoint until ready and display service status card."""
-    log_message("HEALTH", f"Probing backend readiness at {health_url}...", Colors.CYAN)
+) -> tuple[bool, float, int | None]:
+    """Poll an HTTP health URL until 200/201 is observed or timeout expires."""
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         if stop_event and stop_event.is_set():
-            return False
+            return False, 0.0, None
 
         try:
             req = urllib.request.Request(
@@ -576,13 +754,42 @@ def probe_backend_health(
             with urllib.request.urlopen(req, timeout=2.0) as resp:
                 if resp.status in (200, 201):
                     elapsed = round(time.time() - start_time, 2)
-                    log_message("HEALTH", f"Backend responded in {elapsed}s (HTTP {resp.status})", Colors.BRIGHT_GREEN)
-                    _print_service_card(backend_port, frontend_port, lora_port)
-                    return True
+                    return True, elapsed, resp.status
         except (TimeoutError, urllib.error.URLError, ConnectionError, OSError):
             pass
 
         time.sleep(interval)
+
+    return False, round(time.time() - start_time, 2), None
+
+
+def probe_backend_health(
+    health_url: str,
+    backend_port: int,
+    frontend_port: int | None = None,
+    lora_port: int | None = None,
+    timeout: float = HEALTH_CHECK_TIMEOUT,
+    interval: float = HEALTH_CHECK_INTERVAL,
+    stop_event: threading.Event | None = None,
+    targets_port: int | None = None,
+    db_label: str | None = None,
+) -> bool:
+    """Poll backend health endpoint until ready and display service status card."""
+    log_message("HEALTH", f"Probing backend readiness at {health_url}...", Colors.CYAN)
+    ready, elapsed, status_code = _poll_http_health(health_url, timeout, interval, stop_event)
+    if ready:
+        log_message("HEALTH", f"Backend responded in {elapsed}s (HTTP {status_code})", Colors.BRIGHT_GREEN)
+        _print_service_card(
+            backend_port,
+            frontend_port,
+            lora_port,
+            targets_port=targets_port,
+            db_label=db_label,
+        )
+        return True
+
+    if stop_event and stop_event.is_set():
+        return False
 
     log_message(
         "WARN",
@@ -592,7 +799,42 @@ def probe_backend_health(
     return False
 
 
-def _print_service_card(backend_port: int, frontend_port: int | None, lora_port: int | None) -> None:
+def probe_targets_health(
+    health_url: str,
+    targets_port: int,
+    timeout: float = HEALTH_CHECK_TIMEOUT,
+    interval: float = HEALTH_CHECK_INTERVAL,
+    stop_event: threading.Event | None = None,
+) -> bool:
+    """Poll Client Targets health endpoint until ready."""
+    log_message("TARGETS", f"Probing Client Targets readiness at {health_url}...", Colors.BRIGHT_CYAN)
+    ready, elapsed, status_code = _poll_http_health(health_url, timeout, interval, stop_event)
+    if ready:
+        log_message(
+            "TARGETS",
+            f"Client Targets ready on :{targets_port} in {elapsed}s (HTTP {status_code})",
+            Colors.BRIGHT_GREEN,
+        )
+        return True
+
+    if stop_event and stop_event.is_set():
+        return False
+
+    log_message(
+        "WARN",
+        f"Client Targets health check timed out after {timeout}s (service may still be initializing)",
+        Colors.YELLOW,
+    )
+    return False
+
+
+def _print_service_card(
+    backend_port: int,
+    frontend_port: int | None,
+    lora_port: int | None,
+    targets_port: int | None = None,
+    db_label: str | None = None,
+) -> None:
     """Print formatted terminal card with clickable service URLs."""
     divider = "=" * 64
     lines = [
@@ -605,9 +847,20 @@ def _print_service_card(backend_port: int, frontend_port: int | None, lora_port:
         f"  * Health Probe:       {colorize(f'http://127.0.0.1:{backend_port}/health', Colors.BRIGHT_CYAN)}",
     ]
 
+    if db_label:
+        lines.append(f"  * Database:           {colorize(db_label, Colors.BRIGHT_GREEN)}")
+
     if frontend_port:
         lines.append(
             f"  * Web Console:        {colorize(f'http://localhost:{frontend_port}', Colors.BRIGHT_MAGENTA)}"
+        )
+        lines.append(
+            f"  * Client Tenants UI:  {colorize(f'http://localhost:{frontend_port}/clients', Colors.BRIGHT_MAGENTA)}"
+        )
+
+    if targets_port:
+        lines.append(
+            f"  * Client Targets API: {colorize(f'http://127.0.0.1:{targets_port}/healthz', Colors.BRIGHT_CYAN)}"
         )
 
     if lora_port:
@@ -665,39 +918,45 @@ def show_interactive_menu(env_info: EnvironmentInfo) -> str:
     check_ports_status([
         ("Backend", DEFAULT_BACKEND_PORT),
         ("Frontend", DEFAULT_FRONTEND_PORT),
+        ("Targets", DEFAULT_TARGETS_PORT),
         ("LoRA Server", DEFAULT_LORA_PORT),
+        ("PostgreSQL", DEFAULT_POSTGRES_PORT),
     ])
 
     print(colorize("Select an action to launch:", Colors.BOLD))
-    print(f"  {colorize('[1]', Colors.BRIGHT_GREEN)} Both        - Launch Frontend & Backend concurrently {colorize('(Recommended)', Colors.DIM)}")
-    print(f"  {colorize('[2]', Colors.BRIGHT_BLUE)} Backend     - Launch FastAPI Backend only (:8000)")
-    print(f"  {colorize('[3]', Colors.BRIGHT_MAGENTA)} Frontend    - Launch Blazor Server Frontend only (:5149)")
-    print(f"  {colorize('[4]', Colors.BRIGHT_CYAN)} All         - Launch Full Stack (Frontend + Backend + LoRA)")
-    print(f"  {colorize('[5]', Colors.BRIGHT_YELLOW)} LoRA        - Launch LoRA Inference Server only (:11435)")
-    print(f"  {colorize('[6]', Colors.WHITE)} Status      - Refresh port & service diagnostics")
-    print(f"  {colorize('[7]', Colors.YELLOW)} Clean       - Free all ARES ports (kill orphaned processes)")
-    print(f"  {colorize('[8]', Colors.RED)} Exit")
+    print(f"  {colorize('[1]', Colors.BRIGHT_GREEN)} Both        - Launch Frontend & Backend concurrently {colorize('(Default)', Colors.DIM)}")
+    print(f"  {colorize('[2]', Colors.BRIGHT_CYAN)} Suite       - Launch Backend + Frontend + Client Targets (:8000, :5149, :8001) {colorize('(Recommended)', Colors.DIM)}")
+    print(f"  {colorize('[3]', Colors.BRIGHT_BLUE)} Backend     - Launch FastAPI Backend only (:8000)")
+    print(f"  {colorize('[4]', Colors.BRIGHT_MAGENTA)} Frontend    - Launch Blazor Server Frontend only (:5149)")
+    print(f"  {colorize('[5]', Colors.BRIGHT_CYAN)} Targets     - Launch Reference Client Targets only (:8001)")
+    print(f"  {colorize('[6]', Colors.BRIGHT_GREEN)} All         - Launch Full Stack (Frontend + Backend + Targets + LoRA)")
+    print(f"  {colorize('[7]', Colors.BRIGHT_YELLOW)} LoRA        - Launch LoRA Inference Server only (:11435)")
+    print(f"  {colorize('[8]', Colors.WHITE)} Status      - Refresh port & service diagnostics")
+    print(f"  {colorize('[9]', Colors.YELLOW)} Clean       - Free all ARES ports (kill orphaned processes)")
+    print(f"  {colorize('[10]', Colors.RED)} Exit")
     print()
 
     choices = {
         "1": "both",
-        "2": "backend",
-        "3": "frontend",
-        "4": "all",
-        "5": "lora",
-        "6": "status",
-        "7": "clean",
-        "8": "exit",
+        "2": "suite",
+        "3": "backend",
+        "4": "frontend",
+        "5": "targets",
+        "6": "all",
+        "7": "lora",
+        "8": "status",
+        "9": "clean",
+        "10": "exit",
     }
 
     while True:
         try:
-            raw = input(colorize("Enter selection [1-8]: ", Colors.BOLD)).strip()
+            raw = input(colorize("Enter selection [1-10]: ", Colors.BOLD)).strip()
             if raw in choices:
                 return choices[raw]
-            if raw.lower() in ("both", "backend", "frontend", "all", "lora", "status", "clean", "exit"):
+            if raw.lower() in ("both", "suite", "backend", "frontend", "targets", "all", "lora", "status", "clean", "exit"):
                 return raw.lower()
-            print(colorize("Invalid option. Please choose between 1 and 8.", Colors.RED))
+            print(colorize("Invalid option. Please choose between 1 and 10.", Colors.RED))
         except (KeyboardInterrupt, EOFError):
             print()
             return "exit"
@@ -711,13 +970,18 @@ def build_service_tasks(
     lora_port: int = DEFAULT_LORA_PORT,
     host: str = DEFAULT_HOST,
     reload: bool = True,
+    targets_port: int = DEFAULT_TARGETS_PORT,
+    mock_targets_llm: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> list[ServiceTask]:
     """Construct execution task specifications for requested target services."""
     child_env = build_child_env(env_info)
+    if extra_env:
+        child_env.update(extra_env)
     tasks: list[ServiceTask] = []
 
     # Backend task
-    if target in ("backend", "both", "all"):
+    if target in ("backend", "both", "suite", "all"):
         backend_cmd = [
             str(env_info.python_path),
             "-m",
@@ -745,7 +1009,7 @@ def build_service_tasks(
         )
 
     # Frontend task
-    if target in ("frontend", "both", "all"):
+    if target in ("frontend", "both", "suite", "all"):
         if not env_info.dotnet_path:
             raise RuntimeError(
                 ".NET SDK CLI ('dotnet') was not found in PATH. "
@@ -765,6 +1029,8 @@ def build_service_tasks(
             "--urls",
             f"http://localhost:{frontend_port}",
         ]
+        if (env_info.frontend_dir / "obj" / "project.assets.json").is_file():
+            frontend_cmd.append("--no-restore")
 
         tasks.append(
             ServiceTask(
@@ -776,6 +1042,39 @@ def build_service_tasks(
                 env=frontend_env,
                 port=frontend_port,
                 health_url=f"http://localhost:{frontend_port}",
+            )
+        )
+
+    # Client Targets task
+    if target in ("targets", "suite", "all"):
+        targets_env = child_env.copy()
+        targets_env["ARES_GATEWAY_URL"] = f"http://127.0.0.1:{backend_port}"
+        if mock_targets_llm:
+            targets_env["ARES_TARGET_MOCK_LLM"] = "1"
+
+        targets_cmd = [
+            str(env_info.python_path),
+            "-m",
+            "uvicorn",
+            "tests.targets:app",
+            "--host",
+            host,
+            "--port",
+            str(targets_port),
+        ]
+        if reload:
+            targets_cmd.append("--reload")
+
+        tasks.append(
+            ServiceTask(
+                name="Client Targets",
+                tag="TARGETS",
+                color=Colors.BRIGHT_CYAN,
+                command=targets_cmd,
+                cwd=env_info.backend_dir,
+                env=targets_env,
+                port=targets_port,
+                health_url=f"http://127.0.0.1:{targets_port}/healthz",
             )
         )
 
@@ -816,13 +1115,19 @@ def launch_engine(
     skip_health_check: bool = False,
     auto_clean_ports: bool = True,
     health_timeout: float = HEALTH_CHECK_TIMEOUT,
+    targets_port: int = DEFAULT_TARGETS_PORT,
+    mock_targets_llm: bool = False,
+    require_postgres: bool = False,
+    use_sqlite: bool = False,
 ) -> int:
-    """Main launch engine coordinator: verifies ports, spawns services, runs health probe, and monitors."""
+    """Main launch engine coordinator: verifies ports, resolves DB, spawns services, probes health."""
     target_ports: list[int] = []
-    if target in ("backend", "both", "all"):
+    if target in ("backend", "both", "suite", "all"):
         target_ports.append(backend_port)
-    if target in ("frontend", "both", "all"):
+    if target in ("frontend", "both", "suite", "all"):
         target_ports.append(frontend_port)
+    if target in ("targets", "suite", "all"):
+        target_ports.append(targets_port)
     if target in ("lora", "all"):
         target_ports.append(lora_port)
 
@@ -849,6 +1154,15 @@ def launch_engine(
             )
             return 1
 
+    db_env: dict[str, str] = {}
+    db_label: str | None = None
+    if target in ("backend", "both", "targets", "suite", "all"):
+        db_env, db_label = ensure_database_ready(
+            env_info,
+            require_postgres=require_postgres,
+            use_sqlite=use_sqlite,
+        )
+
     tasks = build_service_tasks(
         target=target,
         env_info=env_info,
@@ -857,6 +1171,9 @@ def launch_engine(
         lora_port=lora_port,
         host=host,
         reload=reload,
+        targets_port=targets_port,
+        mock_targets_llm=mock_targets_llm,
+        extra_env=db_env,
     )
 
     manager = ProcessManager()
@@ -874,23 +1191,46 @@ def launch_engine(
     for task in tasks:
         manager.start_service(task)
 
-    # Health checking probe
-    if not skip_health_check and target in ("backend", "both", "all"):
+    effective_health_timeout = (
+        max(health_timeout, 90.0)
+        if target == "all" and health_timeout == HEALTH_CHECK_TIMEOUT
+        else health_timeout
+    )
+
+    # Health checking probes
+    if not skip_health_check and target in ("backend", "both", "suite", "all"):
         health_thread = threading.Thread(
             target=probe_backend_health,
             kwargs={
                 "health_url": f"http://127.0.0.1:{backend_port}/health",
                 "backend_port": backend_port,
-                "frontend_port": frontend_port if target in ("both", "all") else None,
+                "frontend_port": frontend_port if target in ("both", "suite", "all") else None,
                 "lora_port": lora_port if target == "all" else None,
-                "timeout": health_timeout,
+                "timeout": effective_health_timeout,
                 "interval": HEALTH_CHECK_INTERVAL,
                 "stop_event": manager._stopping,
+                "targets_port": targets_port if target in ("suite", "all") else None,
+                "db_label": db_label,
             },
             daemon=True,
             name="backend-health-probe",
         )
         health_thread.start()
+
+    if not skip_health_check and target in ("targets", "suite", "all"):
+        targets_health_thread = threading.Thread(
+            target=probe_targets_health,
+            kwargs={
+                "health_url": f"http://127.0.0.1:{targets_port}/healthz",
+                "targets_port": targets_port,
+                "timeout": effective_health_timeout,
+                "interval": HEALTH_CHECK_INTERVAL,
+                "stop_event": manager._stopping,
+            },
+            daemon=True,
+            name="targets-health-probe",
+        )
+        targets_health_thread.start()
 
     # Wait for completion or interrupt
     try:
@@ -911,12 +1251,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 Examples:
   python launch.py                    # Interactive terminal menu
   python launch.py both               # Launch Frontend & Backend concurrently
+  python launch.py suite              # Launch Backend (:8000) + Frontend (:5149) + Client Targets (:8001)
+  python launch.py suite --sqlite     # Launch full suite with local SQLite (ares.db) fallback
   python launch.py backend            # Launch FastAPI Backend on :8000
   python launch.py frontend           # Launch Blazor Web UI on :5149
-  python launch.py all                # Launch Full Stack (Frontend + Backend + LoRA)
+  python launch.py targets            # Launch Reference Client Targets on :8001
+  python launch.py all                # Launch Full Stack (Frontend + Backend + Targets + LoRA)
   python launch.py lora               # Launch LoRA Inference Server on :11435
   python launch.py status             # Inspect port & service status
-  python launch.py clean              # Free all ARES ports (8000, 5149, 11435)
+  python launch.py clean              # Free all ARES ports (8000, 5149, 8001, 11435)
         """,
     )
 
@@ -924,18 +1267,22 @@ Examples:
         "target",
         nargs="?",
         default=None,
-        choices=["backend", "frontend", "both", "all", "lora", "status", "clean", "kill"],
+        choices=["backend", "frontend", "both", "targets", "suite", "all", "lora", "status", "clean", "kill"],
         help="Service target to launch (or action to perform)",
     )
 
     parser.add_argument("--backend-port", "-bp", type=int, default=DEFAULT_BACKEND_PORT, help="FastAPI port (default: 8000)")
     parser.add_argument("--frontend-port", "-fp", type=int, default=DEFAULT_FRONTEND_PORT, help="Blazor port (default: 5149)")
+    parser.add_argument("--targets-port", "-tp", type=int, default=DEFAULT_TARGETS_PORT, help="Client Targets port (default: 8001)")
     parser.add_argument("--lora-port", "-lp", type=int, default=DEFAULT_LORA_PORT, help="LoRA port (default: 11435)")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Backend bind address (default: 127.0.0.1)")
     parser.add_argument("--no-reload", action="store_true", help="Disable FastAPI uvicorn auto-reloading")
     parser.add_argument("--skip-health-check", action="store_true", help="Skip backend readiness probe")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
     parser.add_argument("--no-clean", action="store_true", help="Do not auto-clean occupied ports before starting")
+    parser.add_argument("--mock-targets", action="store_true", help="Use offline deterministic Victim LLM simulator on Client Targets")
+    parser.add_argument("--sqlite", action="store_true", help="Use local SQLite (ares.db) instead of PostgreSQL")
+    parser.add_argument("--require-postgres", action="store_true", help="Abort instead of falling back to SQLite if PostgreSQL is unreachable")
     parser.add_argument("--timeout", type=float, default=HEALTH_CHECK_TIMEOUT, help="Health check timeout in seconds")
 
     return parser.parse_args(argv)
@@ -976,13 +1323,15 @@ def main(argv: list[str] | None = None) -> int:
         check_ports_status([
             ("Backend", args.backend_port),
             ("Frontend", args.frontend_port),
+            ("Targets", args.targets_port),
             ("LoRA Server", args.lora_port),
+            ("PostgreSQL", DEFAULT_POSTGRES_PORT),
         ])
         return 0
 
     if target in ("clean", "kill"):
         print(colorize("Freeing ARES platform ports...", Colors.BOLD))
-        clean_ports([args.backend_port, args.frontend_port, args.lora_port])
+        clean_ports([args.backend_port, args.frontend_port, args.targets_port, args.lora_port])
         return 0
 
     try:
@@ -997,6 +1346,10 @@ def main(argv: list[str] | None = None) -> int:
             skip_health_check=args.skip_health_check,
             auto_clean_ports=not args.no_clean,
             health_timeout=args.timeout,
+            targets_port=args.targets_port,
+            mock_targets_llm=args.mock_targets,
+            require_postgres=args.require_postgres,
+            use_sqlite=args.sqlite,
         )
     except RuntimeError as e:
         log_message("ERROR", str(e), Colors.RED)

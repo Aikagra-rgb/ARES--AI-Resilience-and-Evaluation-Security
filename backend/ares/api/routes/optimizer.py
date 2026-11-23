@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ares.api.dependencies import enforce_tenant_access, verify_api_key
 from ares.config import settings
 from ares.intent.taxonomy import INTENT_DIRECTIVES, PromptIntent
 from ares.optimizer.pipeline import (
@@ -40,8 +41,12 @@ class OptimizePromptRequest(BaseModel):
     """Request payload to optimize a user prompt."""
     prompt: str = Field(..., min_length=1, max_length=50000, description="The raw prompt text to optimize")
     domain: Optional[str] = Field(default=None, description="Optional domain hint (e.g. software, fintech, healthcare)")
-    target_fidelity: Optional[float] = Field(default=None, ge=0.5, le=1.0, description="Minimum acceptable semantic similarity threshold (defaults to class-aware threshold)")
+    target_fidelity: Optional[float] = Field(default=None, ge=0.5, le=1.0, description="Minimum acceptable semantic similarity threshold (defaults to class/client-aware threshold)")
     allow_harmful: bool = Field(default=False, description="Whether to bypass security gate (for red-teaming research)")
+    org_id: Optional[str] = Field(default=None, description="Optional organization/client ID for per-client classifier and fidelity thresholds")
+    prefer_rule_compression: bool = Field(default=False, description="Prefer ultra-fast Stage-1 lexical compression when target reduction is met")
+    inference_mode: str = Field(default="auto", description="Inference mode: auto, client_adapter, lora, ollama, cloud")
+    model_name: Optional[str] = Field(default=None, description="Optional explicit model identifier override")
 
 
 class OptimizePromptResponse(BaseModel):
@@ -65,6 +70,12 @@ class OptimizePromptResponse(BaseModel):
     latency_ms: float
     exemplars_used: int
     reasoning: Optional[str]
+    org_id: str = "default"
+    classifier_used: str = "global-sklearn"
+    compression_engine: str = "auto"
+    client_adapter_applied: bool = False
+    protected_terms_preserved: bool = True
+    missing_protected_terms: List[str] = Field(default_factory=list)
 
 
 class IntentInfoResponse(BaseModel):
@@ -81,6 +92,7 @@ class IntentInfoResponse(BaseModel):
 @router.post("/api/optimizer/optimize", response_model=OptimizePromptResponse)
 async def optimize_prompt_endpoint(
     req: OptimizePromptRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
     optimizer: UserPromptOptimizer = Depends(get_prompt_optimizer),
 ) -> OptimizePromptResponse:
     """
@@ -88,12 +100,17 @@ async def optimize_prompt_endpoint(
     Applies security gate, intent categorization, few-shot RAG retrieval,
     Llama 3.1 restructuring, and semantic fidelity checks.
     """
+    scoped_org_id = enforce_tenant_access(auth_ctx, req.org_id)
     try:
         res = await optimizer.optimize_prompt(
             user_prompt=req.prompt,
             domain=req.domain,
             target_fidelity=req.target_fidelity,
             allow_harmful=req.allow_harmful,
+            org_id=scoped_org_id,
+            prefer_rule_compression=req.prefer_rule_compression,
+            inference_mode=req.inference_mode,
+            model_name=req.model_name,
         )
 
         savings_display = f"{int(res.token_savings_pct * 100)}%"
@@ -117,6 +134,12 @@ async def optimize_prompt_endpoint(
             latency_ms=res.latency_ms,
             exemplars_used=res.exemplars_used,
             reasoning=res.reasoning,
+            org_id=res.org_id,
+            classifier_used=res.classifier_used,
+            compression_engine=res.compression_engine,
+            client_adapter_applied=res.client_adapter_applied,
+            protected_terms_preserved=res.protected_terms_preserved,
+            missing_protected_terms=res.missing_protected_terms,
         )
     except Exception as exc:
         logger.error("Error optimizing prompt: %s", exc, exc_info=True)
@@ -130,11 +153,14 @@ async def optimize_prompt_endpoint(
 @router.post("/api/optimizer/optimize/stream")
 async def optimize_prompt_stream_endpoint(
     req: OptimizePromptRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
     optimizer: UserPromptOptimizer = Depends(get_prompt_optimizer),
 ) -> StreamingResponse:
     """
     Stream real-time Server-Sent Events (SSE) for each stage of the prompt optimization pipeline.
     """
+    scoped_org_id = enforce_tenant_access(auth_ctx, req.org_id)
+
     async def _event_generator():
         try:
             async for event in optimizer.optimize_prompt_stream(
@@ -142,6 +168,10 @@ async def optimize_prompt_stream_endpoint(
                 domain=req.domain,
                 target_fidelity=req.target_fidelity,
                 allow_harmful=req.allow_harmful,
+                org_id=scoped_org_id,
+                prefer_rule_compression=req.prefer_rule_compression,
+                inference_mode=req.inference_mode,
+                model_name=req.model_name,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:

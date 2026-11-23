@@ -12,10 +12,33 @@
     <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    <Routes @rendermode="InteractiveServer"
+            AntiforgeryFieldName="@_antiforgeryFieldName"
+            AntiforgeryRequestToken="@_antiforgeryRequestToken" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="ares-temple.js"></script>
     <script src="ares-control-surface.js"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>
+
+@code {
+    [Inject]
+    private Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery { get; set; } = default!;
+
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string _antiforgeryFieldName = "__RequestVerificationToken";
+    private string _antiforgeryRequestToken = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        if (HttpContext is not null && !HttpContext.Response.HasStarted)
+        {
+            var tokens = Antiforgery.GetAndStoreTokens(HttpContext);
+            _antiforgeryFieldName = tokens.FormFieldName;
+            _antiforgeryRequestToken = tokens.RequestToken ?? string.Empty;
+        }
+    }
+}

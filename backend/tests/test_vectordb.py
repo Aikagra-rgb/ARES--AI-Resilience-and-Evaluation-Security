@@ -14,7 +14,7 @@ from qdrant_client.http import models
 from ares.config import Settings
 from ares.redteam.attacker import AttackAttempt
 from ares.vectordb.embedder import EmbeddingError, GeminiEmbedder
-from ares.vectordb.store import QdrantStore, QdrantStoreError
+from ares.vectordb.store import QdrantStore, QdrantStoreError, clear_qdrant_client_caches
 
 
 # ===========================================================================
@@ -299,6 +299,34 @@ class TestQdrantStore:
         store = QdrantStore(settings=settings, client=mock_client)
 
         assert store.count("test_col") == 42
+
+    def test_qdrant_store_lazy_init_no_io_and_remote_pooling_timeout(self):
+        clear_qdrant_client_caches()
+        try:
+            cfg = Settings(
+                qdrant_url="http://qdrant.example.internal:6333",
+                qdrant_collection="test_col",
+                qdrant_timeout_seconds=12.5,
+            )
+            with patch("ares.vectordb.store.QdrantClient") as mock_ctor:
+                mock_instance = MagicMock()
+                mock_instance.get_collections.return_value = MagicMock(collections=[])
+                mock_ctor.return_value = mock_instance
+
+                # Constructor must perform zero network/disk I/O
+                store1 = QdrantStore(settings=cfg)
+                store2 = QdrantStore(settings=cfg)
+                assert mock_ctor.call_count == 0
+
+                # Accessing .client resolves, connects with configured timeout, and pools across instances
+                c1 = store1.client
+                c2 = store2.client
+                assert c1 is c2
+                assert mock_ctor.call_count == 1
+                assert mock_ctor.call_args.kwargs["timeout"] == 12.5
+                assert store1.is_local_fallback is False
+        finally:
+            clear_qdrant_client_caches()
 
 
 # ===========================================================================

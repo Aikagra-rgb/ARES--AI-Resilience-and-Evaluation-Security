@@ -1,170 +1,79 @@
 # ARES Security System - Implementation Summary
 
-## Version: 2.0 (P0.0 Stabilization Complete)
-## Date: October 2026
-## Branch: `newBranch`
-## Status: PostgreSQL-only foundation established, dead modules archived, gateway policy hardened
+## Version: 2.1 (Multi-Tenant Clients, Hardened Runtime & Dev Ergonomics)
+## Date: November 2026
+## Status: Multi-tenant client models active, async health probes, pooled Qdrant, dev SQLite fallback
 
 ---
 
-## 🎯 P0.0 Stabilization Summary
+## 🎯 Architecture & Stabilization Summary
 
-This branch represents a **clean, production-grade foundation** after removing unstable/dead code from the prior `c05f1fd` commit. All v2.0 features documented in the previous IMPLEMENTATION_SUMMARY.md have been **archived to `archive/c05f1fd-modules`** per the stabilization plan.
+ARES combines a **multi-layer AI Security Gateway**, **per-client DistilBERT/hybrid intent & threat models**, **prompt compression adapters**, **automated red-teaming targets**, and an **Interactive Blazor Server console**.
 
-### ✅ What's Stable & Working on `newBranch`
+### ✅ Active Components & Hardening Updates
 
 | Component | Status | Description |
-|-----------|--------|-------------|
-| **Database** | ✅ PostgreSQL-only | SQLite fallback removed; `DATABASE_URL` required; fails fast if missing |
-| **Gateway Policy** | ✅ Strict Severity-Max | Deterministic hits (canary/regex/structural) are non-negotiable; benign similarity never overrides; outcome = `max_severity` |
-| **Embedder** | ✅ SecretStr Fixed | `x-goog-api-key` header auth; `EMBEDDING_ALLOW_HASH_FALLBACK=false` (fail closed) |
-| **Frontend** | ✅ Interactive Server Only | WebAssembly packages removed; `BlazorAresApiClient` deleted; `FastApiAresApiClient` registered cleanly |
-| **Rate Limiting** | ✅ Removed | Flawed in-memory middleware dropped; per-target limiting deferred to P0 runners/adapters |
-| **CI Pipeline** | ✅ PostgreSQL 16 Service | Health checks, compilation gate (`compileall` + `ruff`), pytest + .NET 8.0 matrix |
-| **Binaries** | ✅ Untracked | `Report.pdf`, `classifier_v1.0.0.joblib` removed from git; `train_classifier.py` added for reproducible builds |
+| :--- | :--- | :--- |
+| **Database** | ✅ PostgreSQL + Dev SQLite Fallback | PostgreSQL required outside development (`ENVIRONMENT=production`); local dev/test automatically falls back to `ares.db` / `.pytest_ares_test.db` when local Postgres is unreachable (`launch.py --sqlite` supported) |
+| **Health Probes** | ✅ Fast `/health` + Async `/healthz` | `/health` is a non-blocking liveness probe; `/healthz` offloads DB and pooled Qdrant readiness checks to worker threads via `asyncio.to_thread` with fallback visibility |
+| **Vector Store** | ✅ Lazy & Pooled `QdrantStore` | Zero network/disk I/O in `__init__`; configurable `QDRANT_TIMEOUT_SECONDS`; remote & local client pooling with graceful fallback to `./qdrant_data` |
+| **Rate Limiting** | ✅ Active & Bounded (`RateLimitMiddleware`) | Thread-safe `MemoryRateLimiter` in `app/main.py` with lazy TTL cleanup (`cleanup_interval_seconds`) and `max_keys` eviction to prevent unbounded growth |
+| **HMAC Signing** | ✅ Active (`HmacVerificationMiddleware`) | Defaults to `permissive` mode for dev ergonomics; `HmacVerifier` enforces clock skew + replay protection with bounded `max_nonce_cache_size` eviction |
+| **Tracing & Logs** | ✅ Active | `async_trace_span` from `ares/observability/tracing.py` wired into `RuntimeEnforcer`; structured correlation-ID gateway logs in `ares/gateway/logging.py` |
+| **Per-Client Models** | ✅ Active | `client_model_trainer.py` & `distilbert_intent_trainer.py` train per-org threat/intent classifiers & compression adapters, saving `ml_stats.json`, `client_models_ml_stats.json`, and `model_registry.json` |
+| **Client Targets** | ✅ Active (`:8001`) | Three multi-tenant reference targets (`org_acme_fintech`, `org_dev_ops_agent`, `org_medshield_health`) in `tests/targets/` managed via `launch.py suite` / `targets` |
+| **Frontend UI** | ✅ Interactive Server (.NET 8) | Adds **Client Tenants & ML Stats** (`/clients`) and live **Settings & Governance** (`/settings`) pages alongside Arena, Corpus Search, Optimizer, Gateway, and Reports |
 
 ---
 
-## 📦 Current Architecture (newBranch)
+## 📦 Current Architecture
 
 ```
 backend/
 ├── ares/
-│   ├── config.py              # Unified Settings (PostgreSQL-only, fail-fast)
+│   ├── config.py              # Unified Settings (PostgreSQL in prod, SQLite allowed in dev/test, QDRANT_TIMEOUT_SECONDS)
 │   ├── gateway/
-│   │   ├── enforcer.py        # Strict severity-max policy (NO consensus)
+│   │   ├── enforcer.py        # Strict severity-max policy + per-client ML Layer 1.5 + async_trace_span
+│   │   ├── logging.py         # Structured decision ring buffer with correlation_id & organization_id
 │   │   └── benign_corpus.py   # Benign reference prompts for contrastive scoring
+│   ├── intent/
+│   │   └── per_client_classifier.py  # Cached per-org threat & 5-class intent inference bundle
 │   ├── vectordb/
-│   │   ├── embedder.py        # Gemini embedder with header auth + fail-closed fallback
-│   │   └── store.py           # Qdrant vector store
+│   │   ├── embedder.py        # Gemini/Ollama embedder with x-goog-api-key header auth
+│   │   └── store.py           # Lazy pooled QdrantStore with async thread offloading & local fallback
 │   ├── security/
-│   │   └── structural_detector.py   # Layer 0 deterministic detector (10 categories)
-│   ├── redteam/               # Attack generation & evaluation
-│   ├── optimizer/             # Prompt hardening
-│   ├── evaluation/            # ML stats, reports, evaluators
-│   ├── llm/                   # Multi-provider LLM client
-│   ├── api/
-│   │   ├── routes/            # Gateway, dashboard, search, stats, corpus, harden, tests
-│   │   └── schemas.py         # Pydantic models
-│   └── observability/
-│       └── metrics.py         # Prometheus metrics (40+ counters/gauges/histograms)
+│   │   ├── structural_detector.py   # Layer 0 deterministic detector (10 categories)
+│   │   ├── rate_limiter.py    # MemoryRateLimiter with lazy TTL cleanup & max_keys cap
+│   │   └── signing.py         # HmacVerifier with replay cache purging & bounded max_nonce_cache_size
+│   ├── redteam/               # Attack generation, payload operators, target red-teaming
+│   ├── optimizer/             # Enterprise prompt optimizer with per-client thresholds & Stage-1 compression
+│   ├── evaluation/            # ML statistics, report generators
+│   ├── training/              # Per-client model trainer, QLoRA adapter trainer & inference server
+│   ├── api/routes/            # Gateway, clients (+ /stats), dashboard, optimizer, search, stats, corpus, harden, tests
+│   └── observability/         # Prometheus metrics (/metrics), tracing.py spans, structured logging
 ├── app/
-│   ├── main.py                # FastAPI app (no rate limiter, /metrics secured)
-│   ├── database.py            # SQLAlchemy + PostgreSQL
+│   ├── main.py                # FastAPI app (CORSMiddleware, RateLimitMiddleware, HmacVerificationMiddleware, /health, /healthz)
+│   ├── database.py            # SQLAlchemy engine (PostgreSQL + dev SQLite)
 │   ├── models.py              # ORM models
 │   └── orchestrator.py        # Test orchestration
-├── scripts/
-│   └── train_classifier.py    # Reproducible ComplementNB training
 └── tests/
-    ├── conftest.py            # PostgreSQL fixtures with table truncation
-    └── test_embedder_url.py   # Verifies header auth, no masked key in URL
+    ├── conftest.py            # Auto-detects Postgres vs session SQLite fallback (.pytest_ares_test.db)
+    └── targets/               # Multi-tenant client target apps on :8001
 ```
-
----
-
-## 🗂️ Archived Modules (Restorable from `archive/c05f1fd-modules`)
-
-The following were **intentionally deleted** from `newBranch` as dead/broken code:
-
-| Module | Reason for Removal |
-|--------|-------------------|
-| `ares/security/consensus.py` | Weighted consensus diluted deterministic hits; replaced by strict severity-max |
-| `ares/security/signing.py` | Server-side HMAC unused; client-only signing in .NET |
-| `ares/security/moderation.py` | Unwired in-memory queue; no API integration |
-| `ares/security/event_bus.py` | Never implemented (referenced in metrics only) |
-| `ares/sdk/middleware.py` | Duplicate consensus engine; unwired middleware |
-| `ares/intel/pipeline.py` | Syntax error (`yield from` in async); no consumers |
-| `ares/observability/tracing.py` | Syntax error (`class OTLP TracingProvider`); no integration |
-| `src/Ares.Web/Services/Blazor/BlazorAresApiClient.cs` | WebAssembly client; hardcoded dev API key |
-
-**To restore:** `git checkout archive/c05f1fd-modules -- <path>`
 
 ---
 
 ## 🔧 Key Technical Decisions
 
-### Database: PostgreSQL Only
-- `DATABASE_URL` required (format: `postgresql+psycopg://user:pass@host:port/dbname`)
-- CI uses `postgres:16` service container
-- Local dev: `C:\pgsql` or Docker
-- Fails fast with clear error if unset/invalid
+### Database Strategy (Production Strictness, Local Ergonomics)
+- **Production (`ENVIRONMENT != development/dev/local/test/testing`)**: `DATABASE_URL` must be PostgreSQL (`postgresql+psycopg://...`).
+- **Development / Testing**: Local runs via `launch.py` auto-detect Postgres (`:5432`), start a Docker Postgres container if available, or fall back cleanly to local SQLite (`ares.db`) unless `--require-postgres` is passed. `pytest` uses the same automatic fallback in `tests/conftest.py`.
 
-### Gateway: Strict Severity-Max (No Consensus)
-```python
-# Deterministic hits are non-negotiable
-if canary_hit or heuristic_hit or structural_critical:
-    return BLOCK  # cannot be outvoted
-
-# Benign similarity only suppresses vector/ML suspicion
-if margin <= -0.05 and sim_benign >= 0.70:
-    suppress_vector_signal()  # never suppresses deterministic
-
-# Outcome = max_severity across all layers
-```
-
-### Embedder: Header Auth + Fail-Closed
-```python
-# Before (vulnerable): ?key=********** in URL
-# After (secure): x-goog-api-key header with raw secret
-headers = {"x-goog-api-key": settings.gemini_api_key.get_secret_value()}
-response = await client.post(endpoint, json=payload, headers=headers)
-
-# Fallback controlled by EMBEDDING_ALLOW_HASH_FALLBACK=false
-if quota_exhausted and not settings.embedding_allow_hash_fallback:
-    raise EmbeddingError("Fallback disabled - configure Ollama or check quota")
-```
-
-### Frontend: Interactive Server Only
-- Removed `Microsoft.AspNetCore.Components.WebAssembly` packages
-- Removed `AddInteractiveWebAssemblyRenderMode()`
-- Removed `window.ARES_CONFIG` (no browser secrets)
-- `IAresApiClient` → `FastApiAresApiClient` clean DI
+### Security Middleware State in `app/main.py`
+- `RateLimitMiddleware` is **active** (`MemoryRateLimiter(max_keys=10_000, cleanup_interval_seconds=60.0, max_idle_seconds=3600)`), ensuring bounded memory usage.
+- `HmacVerificationMiddleware` is **active** in `permissive` mode by default (`HMAC_ENFORCE_MODE=permissive`) with `HmacVerifier(max_nonce_cache_size=100_000)` evicting expired and overflow nonces.
+- `tracing.py` is **actively wired** into `RuntimeEnforcer.enforce` via `async_trace_span`.
 
 ---
 
-## ✅ Verification Gates
-
-| Gate | Command | Status |
-|------|---------|--------|
-| Python Syntax | `python -m compileall -q backend/ares backend/app` | ✅ PASS |
-| Python Lint | `ruff check backend/ares backend/app` | ✅ PASS (pre-existing style only) |
-| .NET Build | `dotnet build Ares.sln -c Release` | ✅ PASS (0 errors) |
-| CI Pipeline | `.github/workflows/ci.yml` | ✅ Configured for PostgreSQL 16 |
-
----
-
-## 🚫 Known Gaps (Post-P0.0)
-
-| Area | Gap | Priority |
-|------|-----|----------|
-| Rate Limiting | No in-memory middleware; per-target limiting needed in P0 runners | P0.1 |
-| SDK Middleware | No embedded application-layer defense | P0.2 |
-| Threat Intel | No automated corpus updates | P0.3 |
-| Consensus | Replaced by severity-max; multi-layer voting removed | By design |
-| Event Bus | Not implemented | P0.4 |
-| ML Poisoning Prevention | No moderation queue | P0.5 |
-
----
-
-## 📋 Next Steps (P0.1 Planning)
-
-1. **Per-target rate limiting** in runners/adapters (not middleware)
-2. **Multi-tenancy** with per-tenant enforcer instances
-3. **Redis-backed rate limiting** for horizontal scaling
-4. **Structured logging** with JSON + correlation IDs
-5. **OpenTelemetry + Grafana** dashboards
-
----
-
-## 📚 Documentation Status
-
-| File | Status |
-|------|--------|
-| `docs/THREAT_MODEL.md` | ✅ Current (includes STRIDE, vector/LLM limitations, trust boundaries) |
-| `IMPLEMENTATION_SUMMARY.md` | ✅ Updated to reflect P0.0 state (this file) |
-| `README.md` | ⚠️ Needs update to describe current architecture |
-| `archive/c05f1fd-modules` | ✅ Branch exists for history |
-
----
-
-*Generated: October 2026 - ARES AI Resilience and Evaluation Security System (P0.0 Stabilization Complete)*
+*Updated: November 2026 — ARES AI Resilience and Evaluation Security System (v2.1)*

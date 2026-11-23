@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import secrets
 import time
@@ -35,6 +36,7 @@ from app.schemas import (
 from app.security import PayloadCipher, payload_expiry
 from ares.api.dependencies import verify_api_key
 from ares.api.routes import (
+    clients as ares_clients,
     corpus as ares_corpus,
     dashboard as ares_dashboard,
     gateway as ares_gateway,
@@ -44,7 +46,9 @@ from ares.api.routes import (
     tests as ares_tests,
     models as ares_models,
     moderation as ares_moderation,
+    openai_proxy as ares_openai_proxy,
     optimizer as ares_optimizer,
+    redteam as ares_redteam,
 )
 from ares.observability.metrics import (
     get_metrics,
@@ -52,7 +56,7 @@ from ares.observability.metrics import (
     MetricsMiddleware,
 )
 from ares.gateway.enforcer import RuntimeEnforcer
-from ares.security.rate_limiter import MemoryRateLimiter, RateLimitMiddleware
+from ares.security.rate_limiter import MemoryRateLimiter, RateLimitMiddleware, create_rate_limiter
 from ares.security.signing import HmacVerifier, HmacVerificationMiddleware
 from ares.observability.logging import set_correlation_id, set_organization_id
 
@@ -62,6 +66,7 @@ orchestrator = TestOrchestrator(settings)
 # Cache single RuntimeEnforcer in FastAPI.state / lifespan context
 # so models and benign vectors are not reloaded on every request.
 _runtime_enforcer: RuntimeEnforcer | None = None
+_health_qdrant_store = None
 
 
 def get_runtime_enforcer() -> RuntimeEnforcer:
@@ -70,6 +75,18 @@ def get_runtime_enforcer() -> RuntimeEnforcer:
     if _runtime_enforcer is None:
         _runtime_enforcer = RuntimeEnforcer(settings=settings)
     return _runtime_enforcer
+
+
+def get_health_qdrant_store():
+    """Reuse an initialized QdrantStore (or cache a shared one) for readiness probes."""
+    global _health_qdrant_store
+    if _runtime_enforcer is not None and getattr(_runtime_enforcer, "store", None) is not None:
+        return _runtime_enforcer.store
+    if _health_qdrant_store is None:
+        from ares.vectordb.store import QdrantStore
+
+        _health_qdrant_store = QdrantStore(settings=settings)
+    return _health_qdrant_store
 
 
 def correlation_id(request: Request) -> str:
@@ -123,7 +140,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-rate_limiter = MemoryRateLimiter()
+rate_limiter = create_rate_limiter(getattr(settings, "redis_url", None))
 app.add_middleware(
     RateLimitMiddleware,
     limiter=rate_limiter,
@@ -156,6 +173,9 @@ app.include_router(ares_gateway.router, dependencies=_auth)
 app.include_router(ares_models.router, dependencies=_auth)
 app.include_router(ares_moderation.router, dependencies=_auth)
 app.include_router(ares_optimizer.router, dependencies=_auth)
+app.include_router(ares_clients.router, dependencies=_auth)
+app.include_router(ares_redteam.router, dependencies=_auth)
+app.include_router(ares_openai_proxy.router, dependencies=_auth)
 
 # Explicit v1 aliases for frontend compatibility
 @app.get("/api/v1/stats", tags=["stats"], dependencies=_auth)
@@ -187,41 +207,73 @@ async def v1_test_report(test_id: str, format: str = "markdown"):
 @app.get("/metrics", tags=["observability"], dependencies=_auth)
 async def metrics_endpoint():
     """Prometheus metrics endpoint (requires API key)."""
-    return Response(content=get_metrics_output(), media_type="text/plain")
+    return Response(content=get_metrics_output(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/api/v1/auth/whoami", tags=["auth"])
+async def auth_whoami(auth_ctx: dict = Depends(verify_api_key)) -> dict:
+    """Return the authenticated caller's role and tenant scope for Blazor RBAC verification."""
+    return {
+        "authenticated": bool(auth_ctx.get("authenticated")),
+        "role": str(auth_ctx.get("role") or "anonymous"),
+        "is_admin": bool(auth_ctx.get("is_admin")),
+        "organization_id": auth_ctx.get("organization_id"),
+        "user_email": str(auth_ctx.get("user_email") or "system@ares.local"),
+    }
+
+
+@app.get("/health", tags=["health"])
+async def health() -> dict:
+    """Lightweight non-blocking liveness probe."""
+    return {
+        "status": "ok",
+        "service": "ARES Unified API",
+        "version": "0.1.0",
+    }
+
+
+def _check_database_sync() -> dict:
+    from app.database import engine
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return {"status": "ok", "detail": "Connection successful"}
+
+
+def _check_qdrant_sync() -> dict:
+    store = get_health_qdrant_store()
+    collections = store.client.get_collections()
+    return {
+        "status": "ok",
+        "mode": "local_fallback" if store.is_local_fallback else "remote",
+        "detail": f"{len(collections.collections)} collections",
+    }
 
 
 @app.get("/healthz", tags=["health"])
-@app.get("/health", tags=["health"])
 async def healthz() -> dict:
-    """Unified service health probe with dependency checks."""
-    from app.database import engine
-    from sqlalchemy import text
-    
+    """Deep readiness probe executing blocking DB and Qdrant checks off the event loop."""
     checks = {}
     overall_status = "ok"
-    
-    # Check database
+
+    # Check database without blocking the ASGI event loop
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        checks["database"] = {"status": "ok", "detail": "Connection successful"}
+        checks["database"] = await asyncio.wait_for(asyncio.to_thread(_check_database_sync), timeout=3.0)
     except Exception:
         checks["database"] = {"status": "error", "detail": "Connection failed"}
         overall_status = "degraded"
-    
-    # Check Qdrant (if configured)
-    try:
-        if settings.qdrant_url:
-            from ares.vectordb.store import QdrantStore
-            store = QdrantStore(settings=settings)
-            collections = store.client.get_collections()
-            checks["qdrant"] = {"status": "ok", "detail": f"{len(collections.collections)} collections"}
-        else:
-            checks["qdrant"] = {"status": "not_configured", "detail": "QDRANT_URL not set"}
-    except Exception:
-        checks["qdrant"] = {"status": "error", "detail": "Connection failed"}
-        overall_status = "degraded"
-    
+
+    # Check Qdrant (using cached/pooled QdrantStore with fallback visibility)
+    if settings.qdrant_url:
+        try:
+            checks["qdrant"] = await asyncio.wait_for(asyncio.to_thread(_check_qdrant_sync), timeout=5.0)
+        except Exception:
+            checks["qdrant"] = {"status": "error", "detail": "Connection failed"}
+            overall_status = "degraded"
+    else:
+        checks["qdrant"] = {"status": "not_configured", "detail": "QDRANT_URL not set"}
+
     # Check LLM providers (basic config check)
     llm_status = []
     if settings.groq_api_key:
@@ -232,12 +284,12 @@ async def healthz() -> dict:
         llm_status.append("openai")
     if settings.nvidia_api_key:
         llm_status.append("nvidia")
-    
+
     checks["llm_providers"] = {
         "status": "ok" if llm_status else "not_configured",
         "configured": llm_status,
     }
-    
+
     return {
         "status": overall_status,
         "service": "ARES Unified API",
@@ -362,11 +414,6 @@ def test_response(run: TestRun) -> TestRunResponse:
             for item in run.evidence
         ],
     )
-
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "service": "ares-api"}
 
 
 @app.get("/api/v1/projects", response_model=list[ProjectResponse])

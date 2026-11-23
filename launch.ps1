@@ -6,11 +6,13 @@
     Provides native Windows terminal integration, automatic environment detection,
     clean process tree termination on Ctrl+C, port cleanup, and health verification.
 .PARAMETER Target
-    Target service to launch: both (default), backend, frontend, all, lora, status, clean
+    Target service to launch: both (default), suite, backend, frontend, targets, all, lora, status, clean
 .PARAMETER BackendPort
     FastAPI port (default: 8000)
 .PARAMETER FrontendPort
     Blazor Server port (default: 5149)
+.PARAMETER TargetsPort
+    Reference Client Targets port (default: 8001)
 .PARAMETER LoraPort
     LoRA inference server port (default: 11435)
 .PARAMETER HostAddress
@@ -19,6 +21,12 @@
     Disable auto-reloading in uvicorn
 .PARAMETER SkipHealthCheck
     Skip backend readiness health probe
+.PARAMETER MockTargets
+    Use offline deterministic Victim LLM simulator on Client Targets
+.PARAMETER UseSqlite
+    Use local SQLite (ares.db) instead of PostgreSQL
+.PARAMETER RequirePostgres
+    Abort instead of falling back to SQLite if PostgreSQL is unreachable
 .PARAMETER NoColor
     Disable ANSI color output
 .PARAMETER NoClean
@@ -28,6 +36,8 @@
 .EXAMPLE
     .\launch.ps1
     .\launch.ps1 both
+    .\launch.ps1 suite -UseSqlite
+    .\launch.ps1 targets -MockTargets
     .\launch.ps1 backend
     .\launch.ps1 frontend
     .\launch.ps1 all
@@ -38,7 +48,7 @@
 [CmdletBinding()]
 param (
     [Parameter(Position = 0)]
-    [ValidateSet("both", "backend", "frontend", "all", "lora", "status", "clean", "kill", "exit")]
+    [ValidateSet("both", "suite", "backend", "frontend", "targets", "all", "lora", "status", "clean", "kill", "exit")]
     [string]$Target,
 
     [Alias("bp", "backend-port")]
@@ -46,6 +56,9 @@ param (
 
     [Alias("fp", "frontend-port")]
     [int]$FrontendPort = 5149,
+
+    [Alias("tp", "targets-port")]
+    [int]$TargetsPort = 8001,
 
     [Alias("lp", "lora-port")]
     [int]$LoraPort = 11435,
@@ -55,6 +68,9 @@ param (
 
     [switch]$NoReload,
     [switch]$SkipHealthCheck,
+    [switch]$MockTargets,
+    [switch]$UseSqlite,
+    [switch]$RequirePostgres,
     [switch]$NoColor,
     [switch]$NoClean,
     [double]$Timeout = 45.0
@@ -141,6 +157,9 @@ if ($BackendPort -ne 8000) {
 if ($FrontendPort -ne 5149) {
     $ArgsList += @("--frontend-port", $FrontendPort.ToString())
 }
+if ($TargetsPort -ne 8001) {
+    $ArgsList += @("--targets-port", $TargetsPort.ToString())
+}
 if ($LoraPort -ne 11435) {
     $ArgsList += @("--lora-port", $LoraPort.ToString())
 }
@@ -152,6 +171,15 @@ if ($NoReload) {
 }
 if ($SkipHealthCheck) {
     $ArgsList += "--skip-health-check"
+}
+if ($MockTargets) {
+    $ArgsList += "--mock-targets"
+}
+if ($UseSqlite) {
+    $ArgsList += "--sqlite"
+}
+if ($RequirePostgres) {
+    $ArgsList += "--require-postgres"
 }
 if ($NoColor) {
     $ArgsList += "--no-color"

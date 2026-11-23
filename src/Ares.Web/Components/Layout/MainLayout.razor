@@ -1,4 +1,8 @@
 @inherits LayoutComponentBase
+@using System.Security.Claims
+@inject NavigationManager NavigationManager
+@inject AuthenticationStateProvider AuthStateProvider
+@inject AresOperatorContext OperatorContext
 
 <div class="app-shell">
     <aside class="sidebar" aria-label="Primary navigation">
@@ -9,9 +13,11 @@
 
         <nav class="primary-nav">
             <NavLink href="/" Match="NavLinkMatch.All"><b>Overview</b><i>Acropolis</i></NavLink>
+            <NavLink href="/redteam"><b>Red-Team Ops</b><i>Ares Lab</i></NavLink>
             <NavLink href="/arena"><b>ARES Arena</b><i>Palaestra</i></NavLink>
             <NavLink href="/attack-corpus"><b>Attack Corpus</b><i>Armory</i></NavLink>
             <NavLink href="/runtime-incidents"><b>Runtime Incidents</b><i>Oracle</i></NavLink>
+            <NavLink href="/clients"><b>Client Tenants</b><i>Polis</i></NavLink>
             <NavLink href="/prompt-configurations"><b>Prompt Configurations</b><i>Scrolls</i></NavLink>
             <NavLink href="/reports"><b>Reports</b><i>Chronicle</i></NavLink>
             <NavLink href="/settings"><b>Settings</b><i>Forge</i></NavLink>
@@ -26,9 +32,34 @@
     <div class="shell-main">
         <header class="topbar">
             <div class="breadcrumb"><span>Security operations</span><span aria-hidden="true">/</span><strong>@PageTitle</strong></div>
-            <div class="topbar-actions">
-                <span class="environment"><span aria-hidden="true">●</span> Production mirror</span>
-                <span class="profile" aria-label="Profile placeholder">NG</span>
+            <div class="topbar-actions" style="display:flex;align-items:center;gap:0.65rem;">
+                <AuthorizeView>
+                    <Authorized>
+                        @{
+                            var role = context.User.FindFirst(ClaimTypes.Role)?.Value ?? "Tenant";
+                            var orgClaim = context.User.FindFirst(AresOperatorContext.OrgIdClaim)?.Value ?? "*";
+                            var initials = context.User.FindFirst(AresOperatorContext.InitialsClaim)?.Value ?? "OP";
+                            var email = context.User.FindFirst(ClaimTypes.Email)?.Value ?? context.User.Identity?.Name ?? "operator@ares.local";
+                            var isAdmin = string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase);
+                        }
+                        <span class="environment" title="Authenticated tenant access scope">
+                            <span aria-hidden="true">●</span>
+                            @(isAdmin ? "Admin · All Tenants" : $"Tenant · {orgClaim}")
+                        </span>
+                        <span class="profile" aria-label="Authenticated operator @email" title="@email (@role)">@initials</span>
+                        <form method="post" action="/auth/logout" style="margin:0;display:inline;">
+                            @if (AntiforgeryState is not null && !string.IsNullOrEmpty(AntiforgeryState.RequestToken))
+                            {
+                                <input type="hidden" name="@AntiforgeryState.FieldName" value="@AntiforgeryState.RequestToken" />
+                            }
+                            <button type="submit" class="text-button" style="font-size:0.78rem;">Sign out</button>
+                        </form>
+                    </Authorized>
+                    <NotAuthorized>
+                        <span class="environment"><span aria-hidden="true">○</span> Unauthenticated</span>
+                        <a class="button button-secondary" href="/login" style="font-size:0.78rem;padding:0.25rem 0.65rem;">Sign in</a>
+                    </NotAuthorized>
+                </AuthorizeView>
             </div>
         </header>
         <main class="page-content">
@@ -38,16 +69,31 @@
 </div>
 
 @code {
+    [CascadingParameter]
+    private AresAntiforgeryState? AntiforgeryState { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var session = await OperatorContext.GetSessionAsync();
+        if (authState.User.Identity?.IsAuthenticated == true && session is null)
+        {
+            NavigationManager.NavigateTo("/auth/logout", forceLoad: true);
+        }
+    }
+
     private string PageTitle => NavigationManager.Uri switch
     {
+        var u when u.Contains("login", StringComparison.OrdinalIgnoreCase) => "Operator Sign-In",
+        var u when u.Contains("redteam", StringComparison.OrdinalIgnoreCase) => "Red-Team Operations",
         var u when u.Contains("arena", StringComparison.OrdinalIgnoreCase) => "ARES Arena",
         var u when u.Contains("attack-corpus", StringComparison.OrdinalIgnoreCase) || u.Contains("search", StringComparison.OrdinalIgnoreCase) => "Attack Corpus",
         var u when u.Contains("runtime-incidents", StringComparison.OrdinalIgnoreCase) || u.Contains("gateway", StringComparison.OrdinalIgnoreCase) => "Runtime Gateway",
+        var u when u.Contains("clients", StringComparison.OrdinalIgnoreCase) => "Client Tenants",
         var u when u.Contains("prompt-configurations", StringComparison.OrdinalIgnoreCase) || u.Contains("optimizer", StringComparison.OrdinalIgnoreCase) => "Prompt Optimizer",
         var u when u.Contains("reports", StringComparison.OrdinalIgnoreCase) => "Reports",
         var u when u.Contains("stats", StringComparison.OrdinalIgnoreCase) => "ML Analytics",
         var u when u.Contains("settings", StringComparison.OrdinalIgnoreCase) => "Settings",
         _ => "Overview"
     };
-    [Inject] private NavigationManager NavigationManager { get; set; } = default!;
 }

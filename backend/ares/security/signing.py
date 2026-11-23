@@ -40,10 +40,12 @@ class HmacVerifier:
         key_store: Optional[Dict[str, str]] = None,
         default_secret: Optional[str] = None,
         max_clock_skew_seconds: int = 300,
+        max_nonce_cache_size: int = 100_000,
     ):
         self.key_store: Dict[str, str] = dict(key_store) if key_store else {}
         self.default_secret: Optional[str] = default_secret
         self.max_clock_skew_seconds = max_clock_skew_seconds
+        self.max_nonce_cache_size = max(1, int(max_nonce_cache_size))
         self._nonce_cache: Dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -100,11 +102,16 @@ class HmacVerifier:
                 f"Clock skew exceeded: request timestamp {req_time} differs from server time {now} by >{self.max_clock_skew_seconds}s",
             )
 
-        # 3. Replay attack prevention (nonce tracking)
+        # 3. Replay attack prevention (nonce tracking with bounded cardinality)
         with self._lock:
             self._purge_expired_nonces(now)
             if nonce in self._nonce_cache:
                 return False, f"Replay attack detected: nonce '{nonce}' has already been processed"
+            if len(self._nonce_cache) >= self.max_nonce_cache_size:
+                excess = len(self._nonce_cache) - self.max_nonce_cache_size + 1
+                oldest = sorted(self._nonce_cache.items(), key=lambda kv: kv[1])[:excess]
+                for stale_nonce, _ in oldest:
+                    self._nonce_cache.pop(stale_nonce, None)
             # Keep nonce alive for duration of the allowed clock skew window
             self._nonce_cache[nonce] = req_time + self.max_clock_skew_seconds
 

@@ -270,6 +270,57 @@ def test_chat_messages_formatting(mock_settings):
     ]
 
 
+def test_chat_messages_formatting_preserves_openai_tool_fields(mock_settings):
+    """_format_messages preserves OpenAI tool_calls, tool_call_id, name, null/omitted content, and multimodal content."""
+    client = LLMClient(settings=mock_settings)
+    tool_calls = [
+        {
+            "id": "call_weather_1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city": "Zurich"}'},
+        }
+    ]
+    input_msgs = [
+        {"role": "system", "content": "You are a helpful assistant.", "name": "sys"},
+        {
+            "role": "user",
+            "name": "alice",
+            "content": [{"type": "text", "text": "Check Zurich weather"}],
+        },
+        {"role": "assistant", "content": None, "tool_calls": tool_calls},
+        {"role": "assistant", "tool_calls": tool_calls},
+        {
+            "role": "tool",
+            "tool_call_id": "call_weather_1",
+            "name": "get_weather",
+            "content": "Sunny 22C",
+        },
+    ]
+
+    formatted = client._format_messages(messages=input_msgs)
+    assert formatted == input_msgs
+    assert formatted[2]["content"] is None
+    assert formatted[2]["tool_calls"] == tool_calls
+    assert "content" not in formatted[3]
+    assert formatted[3]["tool_calls"] == tool_calls
+    assert formatted[4]["tool_call_id"] == "call_weather_1"
+    assert formatted[4]["name"] == "get_weather"
+
+    # Deep copy protects caller's nested tool_calls and multimodal lists from downstream mutation
+    formatted[2]["tool_calls"][0]["function"]["name"] = "mutated"
+    assert input_msgs[2]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    # Malformed dicts without valid role or content/tool fields raise ValueError
+    with pytest.raises(ValueError, match="role"):
+        client._format_messages(messages=[{"content": "missing role"}])
+    with pytest.raises(ValueError, match="role"):
+        client._format_messages(messages=[{"role": "", "content": "empty role"}])
+    with pytest.raises(ValueError, match="role"):
+        client._format_messages(messages=[{"role": None, "content": "null role"}])
+    with pytest.raises(ValueError, match="content"):
+        client._format_messages(messages=[{"role": "user"}])
+
+
 # =========================================================================
 # Live Integration Tests (using configured API keys)
 # =========================================================================

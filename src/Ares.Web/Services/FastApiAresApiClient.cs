@@ -24,13 +24,20 @@ public sealed class FastApiAresApiClient : IAresApiClient
     private readonly ConcurrentDictionary<string, ArenaTestConfiguration> _submittedConfigurations = new();
     private readonly string? _signingKey;
     private readonly string _keyId;
+    private readonly AresOperatorContext? _operatorContext;
 
-    public FastApiAresApiClient(HttpClient http, MockAresApiClient learningFallback, string? signingKey = null, string keyId = "ares-web")
+    public FastApiAresApiClient(
+        HttpClient http,
+        MockAresApiClient learningFallback,
+        string? signingKey = null,
+        string keyId = "ares-web",
+        AresOperatorContext? operatorContext = null)
     {
         _http = http;
         _learningFallback = learningFallback;
         _signingKey = signingKey;
         _keyId = keyId;
+        _operatorContext = operatorContext;
     }
 
     private (string timestamp, string nonce, string signature, string keyId) ComputeSignature(HttpRequestMessage request, string body = "")
@@ -79,7 +86,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private HttpRequestMessage CreateSignedRequest(HttpMethod method, string url, object? body = null)
+    private async Task<HttpRequestMessage> CreateSignedRequestAsync(HttpMethod method, string url, object? body = null)
     {
         var request = new HttpRequestMessage(method, url);
         
@@ -99,13 +106,17 @@ public sealed class FastApiAresApiClient : IAresApiClient
             request.Headers.Add("X-Ares-Signature", signature);
             request.Headers.Add("X-Ares-Key-Id", keyId);
         }
-        
+
+        if (_operatorContext is not null)
+        {
+            await _operatorContext.ApplyHeadersAsync(request);
+        }
         return request;
     }
 
     private async Task<HttpResponseMessage> SendSignedAsync(HttpMethod method, string url, object? body = null, CancellationToken cancellationToken = default)
     {
-        var request = CreateSignedRequest(method, url, body);
+        using var request = await CreateSignedRequestAsync(method, url, body);
         return await _http.SendAsync(request, cancellationToken);
     }
 
@@ -274,19 +285,19 @@ public sealed class FastApiAresApiClient : IAresApiClient
 
     public async Task<IReadOnlyList<ChallengeSubmission>> GetMySubmissionsAsync(string challengeId, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync($"api/v1/arena/challenges/{Uri.EscapeDataString(challengeId)}/submissions", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, $"api/v1/arena/challenges/{Uri.EscapeDataString(challengeId)}/submissions", cancellationToken: cancellationToken);
         return (await ReadAsync<ApiSubmissions>(response, cancellationToken)).Items.Select(ToSubmission).ToList();
     }
 
     public async Task<IReadOnlyList<ChallengeProgressItem>> GetMyProgressAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/arena/progress", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/arena/progress", cancellationToken: cancellationToken);
         return (await ReadAsync<ApiProgressList>(response, cancellationToken)).Items.Select(ToProgress).ToList();
     }
 
     public async Task<UserProfile> GetMyProfileAsync(CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync("api/v1/arena/profile", cancellationToken);
+        using var response = await SendSignedAsync(HttpMethod.Get, "api/v1/arena/profile", cancellationToken: cancellationToken);
         var item = await ReadAsync<ApiProfile>(response, cancellationToken);
         return new UserProfile(item.Id, item.DisplayName, item.Initials, item.XpTotal, item.Level, item.XpThisLevel, item.XpToNextLevel, [], item.ChallengesSolved, item.AttackerSolved, item.DefenderSolved, item.MemberSince);
     }
@@ -310,7 +321,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
         var route = $"api/tests/{Uri.EscapeDataString(testId)}/report?format={Uri.EscapeDataString(format)}";
         try
         {
-            using var response = await _http.GetAsync(route, cancellationToken);
+            using var response = await SendSignedAsync(HttpMethod.Get, route, cancellationToken: cancellationToken);
             if (response.IsSuccessStatusCode)
                 return await response.Content.ReadAsStringAsync(cancellationToken);
             var detail = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -340,6 +351,45 @@ public sealed class FastApiAresApiClient : IAresApiClient
     public Task<IReadOnlyList<IntentInfoResponse>> GetIntentCategoriesAsync(CancellationToken cancellationToken) =>
         SendLiveAsync<IReadOnlyList<IntentInfoResponse>>(HttpMethod.Get, ["api/v1/optimizer/intents", "api/optimizer/intents"], null, cancellationToken);
 
+    public Task<IReadOnlyList<ClientTenantSummary>> GetClientsAsync(CancellationToken cancellationToken) =>
+        SendLiveAsync<IReadOnlyList<ClientTenantSummary>>(HttpMethod.Get, ["api/v1/clients", "api/clients"], null, cancellationToken);
+
+    public Task<RedTeamTargetRunResponse> RunClientRedTeamAsync(RedTeamTargetRunRequest request, CancellationToken cancellationToken) =>
+        SendLiveAsync<RedTeamTargetRunResponse>(HttpMethod.Post, ["api/v1/redteam/targets/run", "api/redteam/targets/run"], request, cancellationToken);
+
+    public Task<IReadOnlyList<RedTeamCampaignSummary>> GetRedTeamCampaignsAsync(
+        string? orgId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var query = string.IsNullOrWhiteSpace(orgId)
+            ? $"limit={limit}"
+            : $"org_id={Uri.EscapeDataString(orgId)}&limit={limit}";
+        return SendLiveAsync<IReadOnlyList<RedTeamCampaignSummary>>(
+            HttpMethod.Get,
+            [$"api/v1/redteam/campaigns?{query}", $"api/redteam/campaigns?{query}"],
+            null,
+            cancellationToken);
+    }
+
+    public async Task<RedTeamTargetRunResponse?> GetRedTeamCampaignDetailAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await SendLiveAsync<RedTeamTargetRunResponse>(
+                HttpMethod.Get,
+                [$"api/v1/redteam/campaigns/{Uri.EscapeDataString(runId)}", $"api/redteam/campaigns/{Uri.EscapeDataString(runId)}"],
+                null,
+                cancellationToken);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
 
     /// <summary>
     /// Calls the first route that exists (alternates are only tried on HTTP 404) and throws a
@@ -355,7 +405,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
         {
             try
             {
-                using var message = CreateSignedRequest(method, route, body);
+                using var message = await CreateSignedRequestAsync(method, route, body);
 
                 using var response = await _http.SendAsync(message, cancellationToken);
                 if (response.IsSuccessStatusCode)
@@ -387,6 +437,10 @@ public sealed class FastApiAresApiClient : IAresApiClient
                 using var message = new HttpRequestMessage(method, route);
                 if (body is not null)
                     message.Content = JsonContent.Create(body, body.GetType(), options: JsonOptions);
+                if (_operatorContext is not null)
+                {
+                    await _operatorContext.ApplyHeadersAsync(message);
+                }
 
                 using var response = await _http.SendAsync(message, cancellationToken);
                 if (response.IsSuccessStatusCode)

@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Database
     # -------------------------------------------------------------------------
-    # PostgreSQL only - no SQLite fallback. Must be set via DATABASE_URL env var.
-    # Format: postgresql+psycopg://user:pass@host:port/dbname
+    # PostgreSQL is required outside development/test; local SQLite is allowed when ENVIRONMENT is development/dev/local/test/testing.
+    # Format: postgresql+psycopg://user:pass@host:port/dbname (or sqlite:///path/to/ares.db in dev/test)
     database_url: str = Field(..., alias="DATABASE_URL")
     auto_create_schema: bool = Field(default=True, alias="AUTO_CREATE_SCHEMA")
     
@@ -76,10 +76,12 @@ class Settings(BaseSettings):
     hmac_secret: str = Field(default=_DEV_API_KEY, alias="HMAC_SECRET")
     hmac_max_clock_skew: int = Field(default=300, alias="HMAC_MAX_CLOCK_SKEW")
     
-    # HTTP Gateway Rate Limiting
+    # HTTP Gateway Rate Limiting & Redis Backend
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
     rate_limit_requests: int = Field(default=120, alias="RATE_LIMIT_REQUESTS")
     rate_limit_window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+    redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
+    tenant_api_keys: str = Field(default="", alias="ARES_TENANT_API_KEYS")
     
     # Gateway Resilience & Circuit Breaker
     gateway_fail_closed_on_outage: bool = Field(default=False, alias="GATEWAY_FAIL_CLOSED_ON_OUTAGE")
@@ -137,6 +139,7 @@ class Settings(BaseSettings):
     qdrant_api_key: SecretStr | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="ares_attacks", alias="QDRANT_COLLECTION")
     qdrant_vector_size: int = Field(default=768, alias="QDRANT_VECTOR_SIZE")
+    qdrant_timeout_seconds: float = Field(default=5.0, alias="QDRANT_TIMEOUT_SECONDS")
     gemini_embedding_model: str = Field(default="models/gemini-embedding-001", alias="GEMINI_EMBEDDING_MODEL")
     
     # -------------------------------------------------------------------------
@@ -204,6 +207,37 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def parsed_tenant_api_keys(self) -> dict[str, str]:
+        """Parse optional `ARES_TENANT_API_KEYS` (JSON object or comma-separated `org_id:secret`)."""
+        raw = (self.tenant_api_keys or "").strip()
+        if not raw:
+            return {}
+        if raw.startswith("{"):
+            try:
+                import json as _json
+
+                loaded = _json.loads(raw)
+                if isinstance(loaded, dict):
+                    return {
+                        str(k).strip(): str(v).strip()
+                        for k, v in loaded.items()
+                        if str(k).strip() and str(v).strip()
+                    }
+            except Exception:
+                return {}
+        mapping: dict[str, str] = {}
+        for part in raw.split(","):
+            item = part.strip()
+            if not item or ":" not in item:
+                continue
+            oid, key_val = item.split(":", 1)
+            oid_clean = oid.strip()
+            key_clean = key_val.strip()
+            if oid_clean and key_clean:
+                mapping[oid_clean] = key_clean
+        return mapping
     
     # -------------------------------------------------------------------------
     # Validators
@@ -211,20 +245,28 @@ class Settings(BaseSettings):
     
     @model_validator(mode="after")
     def _validate_database_url(self) -> "Settings":
-        """Fail fast if DATABASE_URL is unset or invalid."""
+        """Fail fast if DATABASE_URL is unset or invalid; allow SQLite only in dev/test."""
         if not self.database_url or not self.database_url.strip():
             raise ValueError(
                 "DATABASE_URL is required. Set it to a PostgreSQL connection string, "
                 "e.g., postgresql+psycopg://user:pass@host:port/dbname"
             )
-        
-        # Must be PostgreSQL
-        if not self.database_url.startswith("postgresql"):
+
+        url = self.database_url.strip()
+        is_postgres = url.startswith("postgresql")
+        is_sqlite = url.startswith("sqlite")
+        if self.is_development:
+            if not (is_postgres or is_sqlite):
+                raise ValueError(
+                    "DATABASE_URL must be PostgreSQL (postgresql+psycopg://...) or SQLite (sqlite:///...) "
+                    f"in development/test, got: {self.database_url}"
+                )
+        elif not is_postgres:
             raise ValueError(
-                f"DATABASE_URL must be a PostgreSQL connection string (postgresql+psycopg://...), "
-                f"got: {self.database_url}"
+                "DATABASE_URL must be a PostgreSQL connection string (postgresql+psycopg://...) "
+                f"outside development, got: {self.database_url}"
             )
-        
+
         return self
 
     @model_validator(mode="after")

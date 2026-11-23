@@ -56,5 +56,11 @@ public interface IAresApiClient
     // ── User Prompt Optimizer ────────────────────────────────────────────────
     Task<OptimizePromptResponse> OptimizePromptAsync(OptimizePromptRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<IntentInfoResponse>> GetIntentCategoriesAsync(CancellationToken cancellationToken);
+
+    // ── Multi-Tenant Clients & Dedicated Red-Team Ops ────────────────────────
+    Task<IReadOnlyList<ClientTenantSummary>> GetClientsAsync(CancellationToken cancellationToken);
+    Task<RedTeamTargetRunResponse> RunClientRedTeamAsync(RedTeamTargetRunRequest request, CancellationToken cancellationToken);
+    Task<IReadOnlyList<RedTeamCampaignSummary>> GetRedTeamCampaignsAsync(string? orgId, int limit, CancellationToken cancellationToken);
+    Task<RedTeamTargetRunResponse?> GetRedTeamCampaignDetailAsync(string runId, CancellationToken cancellationToken);
 }
 

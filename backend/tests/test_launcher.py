@@ -27,6 +27,7 @@ from launch import (
     clean_ports,
     colorize,
     detect_environment,
+    ensure_database_ready,
     get_child_pids,
     get_pids_for_port,
     is_port_in_use,
@@ -45,18 +46,22 @@ def test_parse_args_defaults() -> None:
     assert args.target is None
     assert args.backend_port == 8000
     assert args.frontend_port == 5149
+    assert args.targets_port == 8001
     assert args.lora_port == 11435
     assert args.host == "127.0.0.1"
     assert args.no_reload is False
     assert args.skip_health_check is False
     assert args.no_color is False
     assert args.no_clean is False
+    assert args.mock_targets is False
+    assert args.sqlite is False
+    assert args.require_postgres is False
     assert args.timeout == 45.0
 
 
 @pytest.mark.parametrize(
     "target_name",
-    ["backend", "frontend", "both", "all", "lora", "status", "clean", "kill"],
+    ["backend", "frontend", "both", "targets", "suite", "all", "lora", "status", "clean", "kill"],
 )
 def test_parse_args_valid_targets(target_name: str) -> None:
     args = parse_args([target_name])
@@ -65,33 +70,38 @@ def test_parse_args_valid_targets(target_name: str) -> None:
 
 def test_parse_args_custom_ports_and_flags() -> None:
     args = parse_args([
-        "both",
+        "suite",
         "--backend-port", "9000",
         "--frontend-port", "6000",
+        "--targets-port", "8005",
         "--lora-port", "12000",
         "--host", "0.0.0.0",
         "--no-reload",
         "--skip-health-check",
         "--no-color",
         "--no-clean",
+        "--mock-targets",
         "--timeout", "60",
     ])
-    assert args.target == "both"
+    assert args.target == "suite"
     assert args.backend_port == 9000
     assert args.frontend_port == 6000
+    assert args.targets_port == 8005
     assert args.lora_port == 12000
     assert args.host == "0.0.0.0"
     assert args.no_reload is True
     assert args.skip_health_check is True
     assert args.no_color is True
     assert args.no_clean is True
+    assert args.mock_targets is True
     assert args.timeout == 60.0
 
 
 def test_parse_args_short_port_flags() -> None:
-    args = parse_args(["all", "-bp", "8080", "-fp", "5000", "-lp", "11000"])
+    args = parse_args(["all", "-bp", "8080", "-fp", "5000", "-tp", "8002", "-lp", "11000"])
     assert args.backend_port == 8080
     assert args.frontend_port == 5000
+    assert args.targets_port == 8002
     assert args.lora_port == 11000
 
 
@@ -171,18 +181,64 @@ def test_build_service_tasks_all() -> None:
     if not env_info.dotnet_path:
         env_info.dotnet_path = Path("/mock/dotnet")
 
-    tasks = build_service_tasks("all", env_info, backend_port=8000, frontend_port=5149, lora_port=11435)
+    tasks = build_service_tasks(
+        "all",
+        env_info,
+        backend_port=8000,
+        frontend_port=5149,
+        lora_port=11435,
+        targets_port=8001,
+    )
 
-    assert len(tasks) == 3
+    assert len(tasks) == 4
     tags = [t.tag for t in tasks]
     assert "BACKEND" in tags
     assert "FRONTEND" in tags
+    assert "TARGETS" in tags
     assert "LORA" in tags
+
+    targets_task = next(t for t in tasks if t.tag == "TARGETS")
+    assert targets_task.port == 8001
+    assert "tests.targets:app" in targets_task.command
+    assert targets_task.env["ARES_GATEWAY_URL"] == "http://127.0.0.1:8000"
 
     lora_task = next(t for t in tasks if t.tag == "LORA")
     assert lora_task.port == 11435
     assert "ares.training.serve_lora" in lora_task.command
     assert "11435" in lora_task.command
+
+
+def test_build_service_tasks_targets_and_suite() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    if not env_info.dotnet_path:
+        env_info.dotnet_path = Path("/mock/dotnet")
+
+    targets_only = build_service_tasks(
+        "targets",
+        env_info,
+        backend_port=8100,
+        targets_port=8101,
+        reload=False,
+        mock_targets_llm=True,
+    )
+    assert len(targets_only) == 1
+    t_task = targets_only[0]
+    assert t_task.tag == "TARGETS"
+    assert t_task.port == 8101
+    assert "tests.targets:app" in t_task.command
+    assert "--reload" not in t_task.command
+    assert t_task.env["ARES_GATEWAY_URL"] == "http://127.0.0.1:8100"
+    assert t_task.env["ARES_TARGET_MOCK_LLM"] == "1"
+
+    suite_tasks = build_service_tasks(
+        "suite",
+        env_info,
+        backend_port=8000,
+        frontend_port=5149,
+        targets_port=8001,
+    )
+    assert len(suite_tasks) == 3
+    assert [t.tag for t in suite_tasks] == ["BACKEND", "FRONTEND", "TARGETS"]
 
 
 def test_build_service_tasks_frontend_missing_dotnet_raises() -> None:
@@ -366,4 +422,170 @@ def test_main_status_and_clean_routing() -> None:
         code = main(["clean", "--no-color"])
         assert code == 0
         assert mock_clean.called
+
+
+def test_parse_args_database_flags() -> None:
+    sqlite_args = parse_args(["suite", "--sqlite"])
+    assert sqlite_args.sqlite is True
+    assert sqlite_args.require_postgres is False
+
+    pg_args = parse_args(["suite", "--require-postgres"])
+    assert pg_args.require_postgres is True
+    assert pg_args.sqlite is False
+
+
+def test_ensure_database_ready_postgres_reachable() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    with (
+        patch("launch.read_configured_database_url", return_value="postgresql+psycopg://ares:pw@127.0.0.1:5432/ares"),
+        patch("launch._is_tcp_reachable", return_value=True),
+    ):
+        db_env, db_label = ensure_database_ready(env_info)
+    assert db_env == {}
+    assert "PostgreSQL" in db_label
+
+
+def test_ensure_database_ready_auto_starts_docker_postgres() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    with (
+        patch("launch.read_configured_database_url", return_value="postgresql+psycopg://ares:pw@127.0.0.1:5432/ares"),
+        patch("launch._is_tcp_reachable", return_value=False),
+        patch("launch._try_start_docker_postgres", return_value=True),
+    ):
+        db_env, db_label = ensure_database_ready(env_info)
+    assert db_env == {}
+    assert "Docker" in db_label
+
+
+def test_ensure_database_ready_falls_back_to_sqlite_when_postgres_and_docker_down() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    with (
+        patch("launch.read_configured_database_url", return_value="postgresql+psycopg://ares:pw@127.0.0.1:5432/ares"),
+        patch("launch._is_tcp_reachable", return_value=False),
+        patch("launch._try_start_docker_postgres", return_value=False),
+    ):
+        db_env, db_label = ensure_database_ready(env_info)
+    assert db_env["DATABASE_URL"].startswith("sqlite:///")
+    assert db_env["AUTO_CREATE_SCHEMA"] == "true"
+    assert db_env["ENVIRONMENT"] == "development"
+    assert "SQLite" in db_label
+
+
+def test_ensure_database_ready_require_postgres_raises() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    with (
+        patch("launch.read_configured_database_url", return_value="postgresql+psycopg://ares:pw@127.0.0.1:5432/ares"),
+        patch("launch._is_tcp_reachable", return_value=False),
+        patch("launch._try_start_docker_postgres", return_value=False),
+    ):
+        with pytest.raises(RuntimeError, match="PostgreSQL is unreachable"):
+            ensure_database_ready(env_info, require_postgres=True)
+
+
+def test_config_allows_sqlite_only_in_development() -> None:
+    from ares.config import Settings
+
+    dev_cfg = Settings(DATABASE_URL="sqlite:///test.db", ENVIRONMENT="development")
+    assert dev_cfg.database_url == "sqlite:///test.db"
+
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        Settings(
+            DATABASE_URL="sqlite:///test.db",
+            ENVIRONMENT="production",
+            ARES_AUTH_ENABLED=True,
+            ALLOW_DEV_IDENTITY=False,
+            PROMPT_FINGERPRINT_SECRET="x" * 32,
+            EXECUTION_PAYLOAD_ENCRYPTION_KEY="y" * 32,
+            ARES_API_KEY="z" * 32,
+            GATEWAY_CANARY_TOKEN="c" * 32,
+        )
+
+
+def test_build_child_env_sets_fortran_ctrl_handler() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    child_env = build_child_env(env_info)
+    assert child_env["FOR_DISABLE_CONSOLE_CTRL_HANDLER"] == "1"
+
+
+def test_launch_engine_all_promotes_default_timeout_to_90s() -> None:
+    env_info = detect_environment(repo_root=repo_root)
+    captured_timeouts: list[float] = []
+
+    def fake_probe(**kwargs):
+        captured_timeouts.append(kwargs["timeout"])
+        return True
+
+    fake_manager = MagicMock()
+    fake_manager.wait.return_value = 0
+
+    with (
+        patch("launch.is_port_in_use", return_value=False),
+        patch("launch.ensure_database_ready", return_value=({}, "SQLite")),
+        patch("launch.ProcessManager", return_value=fake_manager),
+        patch("launch.probe_backend_health", side_effect=fake_probe),
+        patch("launch.probe_targets_health", side_effect=fake_probe),
+        patch("threading.Thread") as mock_thread_cls,
+    ):
+        def immediate_thread(*, target=None, kwargs=None, **rest):
+            t = MagicMock()
+            t.start.side_effect = lambda: target(**(kwargs or {}))
+            return t
+
+        mock_thread_cls.side_effect = immediate_thread
+        code = launch_engine("all", env_info, health_timeout=45.0)
+        assert code == 0
+        assert captured_timeouts == [90.0, 90.0]
+
+        captured_timeouts.clear()
+        code2 = launch_engine("all", env_info, health_timeout=30.0)
+        assert code2 == 0
+        assert captured_timeouts == [30.0, 30.0]
+
+
+def test_detect_environment_falls_back_on_ctypes_wdac_failure(tmp_path: Path) -> None:
+    is_win = sys.platform == "win32"
+    venv_dir = tmp_path / "venv"
+    scripts_dir = venv_dir / ("Scripts" if is_win else "bin")
+    scripts_dir.mkdir(parents=True)
+    fake_venv_py = scripts_dir / ("python.exe" if is_win else "python")
+    fake_venv_py.write_text("", encoding="utf-8")
+
+    site_packages = (
+        venv_dir / "Lib" / "site-packages"
+        if is_win
+        else venv_dir / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    )
+    site_packages.mkdir(parents=True)
+
+    base_executable = Path(sys.executable)
+    (venv_dir / "pyvenv.cfg").write_text(f"executable = {base_executable}\n", encoding="utf-8")
+
+    def fake_run(cmd, **_kwargs):
+        proc_res = MagicMock()
+        if str(cmd[0]) == str(fake_venv_py) and "-c" in cmd and "ctypes" in cmd[cmd.index("-c") + 1]:
+            proc_res.returncode = 1
+            proc_res.stdout = ""
+            proc_res.stderr = "ImportError: DLL load failed while importing _ctypes"
+            return proc_res
+        if "--version" in cmd:
+            proc_res.returncode = 0
+            proc_res.stdout = f"Python {sys.version.split()[0]}"
+            proc_res.stderr = ""
+            return proc_res
+        proc_res.returncode = 0
+        proc_res.stdout = ""
+        proc_res.stderr = ""
+        return proc_res
+
+    with patch("launch.subprocess.run", side_effect=fake_run):
+        env_info = detect_environment(repo_root=tmp_path)
+
+    assert env_info.python_path == base_executable
+    assert env_info.venv_path == venv_dir
+
+    child_env = build_child_env(env_info)
+    assert str(site_packages) in child_env["PYTHONPATH"]
+    assert child_env["VIRTUAL_ENV"] == str(venv_dir)
+
+
 

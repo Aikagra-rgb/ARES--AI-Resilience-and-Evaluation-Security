@@ -1,0 +1,24 @@
+@inject NavigationManager NavigationManager
+
+<section class="surface-card" style="max-width:480px;margin:3rem auto;text-align:center;">
+    <p class="eyebrow">Authentication Required</p>
+    <h2>Redirecting to ARES Sign-In…</h2>
+    <p style="font-size:0.86rem;color:#94a3b8;">
+        Please authenticate as a Platform Admin or Tenant Operator to access this console.
+    </p>
+    <a class="button button-primary" href="/login">Continue to Sign-In</a>
+</section>
+
+@code {
+    protected override void OnInitialized()
+    {
+        var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        if (!relative.StartsWith("login", StringComparison.OrdinalIgnoreCase))
+        {
+            var target = string.IsNullOrWhiteSpace(relative)
+                ? "/login"
+                : $"/login?returnUrl={Uri.EscapeDataString("/" + relative)}";
+            NavigationManager.NavigateTo(target, forceLoad: false);
+        }
+    }
+}

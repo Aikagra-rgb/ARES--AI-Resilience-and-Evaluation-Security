@@ -171,3 +171,28 @@ def test_hmac_middleware_integration_with_fastapi():
     tampered_resp = client.get("/api/models", headers=tampered_headers)
     assert tampered_resp.status_code in (401, 403)
     assert "HMAC_SIGNATURE_INVALID" in tampered_resp.json()["code"]
+
+
+def test_hmac_verifier_bounded_nonce_cache(test_secret):
+    """Verify nonce replay cache evicts oldest entries cleanly when exceeding max_nonce_cache_size."""
+    bounded_verifier = HmacVerifier(
+        default_secret=test_secret,
+        max_clock_skew_seconds=300,
+        max_nonce_cache_size=3,
+    )
+    now = str(int(time.time()))
+    for idx in range(5):
+        nonce = f"nonce-{idx}-{uuid.uuid4().hex[:8]}"
+        sig = compute_test_signature("GET", "/api/models", "", "", now, nonce, test_secret)
+        ok, reason = bounded_verifier.verify(
+            method="GET",
+            path="/api/models",
+            query="",
+            body="",
+            timestamp_str=now,
+            nonce=nonce,
+            signature=sig,
+        )
+        assert ok is True, reason
+
+    assert len(bounded_verifier._nonce_cache) == 3

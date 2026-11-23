@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Callable, Coroutine, Dict, Optional, TypeVar
 
+from ares.security.error_sanitizer import sanitize_error_message
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -87,12 +89,16 @@ class CircuitBreaker:
         with self._lock:
             now = time.time()
             self._failure_count += 1
+            safe_error = sanitize_error_message(
+                f"{type(error).__name__}: {error}",
+                default_message=type(error).__name__,
+            )
             logger.warning(
                 "Circuit breaker '%s' recorded failure (%d/%d): %s",
                 self.name,
                 self._failure_count,
                 self.failure_threshold,
-                error,
+                safe_error,
             )
 
             if self._state == CircuitState.HALF_OPEN or self._failure_count >= self.failure_threshold:
@@ -139,14 +145,22 @@ _REGISTRY_LOCK = threading.Lock()
 
 def get_circuit_breaker(
     name: str,
-    failure_threshold: int = 3,
-    recovery_timeout_seconds: float = 30.0,
+    failure_threshold: Optional[int] = None,
+    recovery_timeout_seconds: Optional[float] = None,
 ) -> CircuitBreaker:
     with _REGISTRY_LOCK:
         if name not in _BREAKERS:
             _BREAKERS[name] = CircuitBreaker(
                 name=name,
-                failure_threshold=failure_threshold,
-                recovery_timeout_seconds=recovery_timeout_seconds,
+                failure_threshold=failure_threshold if failure_threshold is not None else 3,
+                recovery_timeout_seconds=(
+                    recovery_timeout_seconds if recovery_timeout_seconds is not None else 30.0
+                ),
             )
+        else:
+            breaker = _BREAKERS[name]
+            if failure_threshold is not None:
+                breaker.failure_threshold = failure_threshold
+            if recovery_timeout_seconds is not None:
+                breaker.recovery_timeout_seconds = recovery_timeout_seconds
         return _BREAKERS[name]

@@ -24,6 +24,10 @@ from app.models import (
     Evidence,
     ArenaSubmission,
     AuditLog,
+    RedTeamCampaign,
+    RedTeamCampaignCase,
+    ModerationQueueItem,
+    ClientTenantRecord,
 )
 
 
@@ -37,13 +41,15 @@ def test_alembic_single_head_and_linear_history():
     # 1. Exactly one head
     heads = script.get_heads()
     assert len(heads) == 1, f"Expected single migration head, found multiple: {heads}"
-    assert heads[0] == "20261004_0004"
+    assert heads[0] == "20261122_0006"
 
     # 2. Check linear chain from base to head
     revisions = list(script.walk_revisions(base="base", head=heads[0]))
     rev_ids = [r.revision for r in revisions]
 
     expected_chain = [
+        "20261122_0006",
+        "20261120_0005",
         "20261004_0004",
         "20260904_0003",
         "20260904_0002",
@@ -53,6 +59,10 @@ def test_alembic_single_head_and_linear_history():
 
 
 def test_sqlalchemy_models_registered_in_metadata():
+    assert RedTeamCampaign.__tablename__ == "redteam_campaigns"
+    assert RedTeamCampaignCase.__tablename__ == "redteam_campaign_cases"
+    assert ModerationQueueItem.__tablename__ == "moderation_queue_items"
+    assert ClientTenantRecord.__tablename__ == "client_tenants"
     tables = Base.metadata.tables.keys()
 
     expected_tables = {
@@ -65,6 +75,10 @@ def test_sqlalchemy_models_registered_in_metadata():
         "evidence",
         "arena_submissions",
         "audit_logs",
+        "redteam_campaigns",
+        "redteam_campaign_cases",
+        "moderation_queue_items",
+        "client_tenants",
     }
 
     assert expected_tables.issubset(tables), f"Missing tables in metadata: {expected_tables - set(tables)}"

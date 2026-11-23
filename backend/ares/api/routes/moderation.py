@@ -4,19 +4,22 @@ API Routes for Attack Moderation Queue and Threat Intelligence Ingestion.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ares.api.dependencies import verify_api_key
+from ares.api.dependencies import enforce_tenant_access, verify_api_key
 from ares.api.routes.gateway import get_qdrant_store
 from ares.config import settings as default_settings
 from ares.intel.feed_ingester import ThreatIntelIngester
 from ares.intel.models import IngestResult
+from ares.moderation.feedback_export import export_feedback_to_training
 from ares.moderation.models import ModerationItem, ModerationStatus, SubmissionSeverity
 from ares.moderation.queue import AttackModerationQueue
+from ares.training.model_registry import validate_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,17 @@ class IngestFeedRequest(BaseModel):
     feed_type: str = Field(..., description="Type of threat feed (e.g., 'mitre_atlas', 'owasp_llm', 'generic')")
     feed_name: str = Field(default="external_intel", description="Identifier name for the feed")
     data: Any = Field(..., description="Raw feed data object (dictionary or list)")
+
+
+class ExportTrainingRequest(BaseModel):
+    org_id: Optional[str] = Field(default=None, description="Optional target org_id filter")
+    include_moderation: bool = Field(default=True, description="Include approved moderation queue items")
+    include_arena_findings: bool = Field(default=True, description="Include completed Arena TestRun.findings")
+    retrain: bool = Field(default=False, description="Trigger per-client train_client_models after merge")
+    retrain_orgs: Optional[List[str]] = Field(
+        default=None,
+        description="Optional explicit org_ids to retrain when retrain=True",
+    )
 
 
 @router.post("/submit", response_model=Dict[str, Any])
@@ -195,3 +209,55 @@ async def ingest_threat_intel(
         return result.to_dict()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/export-training", response_model=Dict[str, Any])
+async def export_training_feedback(
+    req: ExportTrainingRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
+    queue: AttackModerationQueue = Depends(get_moderation_queue),
+) -> Dict[str, Any]:
+    """
+    Merge approved moderation items and completed Arena TestRun.findings into
+    `backend/data/redteam_findings.json` and optionally trigger per-client retraining.
+    """
+    try:
+        validated_org = validate_org_id(req.org_id) if (req.org_id is not None and req.org_id != "default") else req.org_id
+        validated_retrain_orgs = (
+            [validate_org_id(oid) for oid in req.retrain_orgs]
+            if req.retrain_orgs
+            else req.retrain_orgs
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    scoped_org = enforce_tenant_access(auth_ctx, validated_org)
+    target_retrain_orgs = validated_retrain_orgs
+    if target_retrain_orgs:
+        for oid in target_retrain_orgs:
+            enforce_tenant_access(auth_ctx, oid)
+
+    approved_items = (
+        await queue.list_items(status=ModerationStatus.APPROVED, limit=1000)
+        if req.include_moderation
+        else []
+    )
+    queue_session_factory = queue._get_session_factory() if hasattr(queue, "_get_session_factory") else None
+    queue_uses_db = bool(getattr(queue, "_use_db", True))
+    try:
+        return await asyncio.to_thread(
+            export_feedback_to_training,
+            org_id=scoped_org,
+            moderation_items=approved_items,
+            session_factory=queue_session_factory,
+            use_db_session=queue_uses_db or req.include_arena_findings,
+            include_moderation=req.include_moderation,
+            include_arena_findings=req.include_arena_findings,
+            retrain=req.retrain,
+            retrain_orgs=target_retrain_orgs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed exporting moderation/Arena feedback to training data: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Training export failed: {exc}") from exc
