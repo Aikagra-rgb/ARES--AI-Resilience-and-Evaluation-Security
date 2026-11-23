@@ -140,6 +140,27 @@ def reset_app_rate_limiter():
     _clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_circuit_breakers():
+    """Clear global circuit-breaker registry between tests to prevent cross-test OPEN bleed."""
+    def _clear() -> None:
+        cb_mod = sys.modules.get("ares.security.circuit_breaker")
+        if cb_mod is None:
+            return
+        breakers = getattr(cb_mod, "_BREAKERS", None)
+        lock = getattr(cb_mod, "_REGISTRY_LOCK", None)
+        if isinstance(breakers, dict):
+            if lock is not None:
+                with lock:
+                    breakers.clear()
+            else:
+                breakers.clear()
+
+    _clear()
+    yield
+    _clear()
+
+
 # Pytest configuration
 def pytest_configure(config):
     """Configure pytest markers."""
