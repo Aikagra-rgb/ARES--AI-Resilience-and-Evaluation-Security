@@ -4,26 +4,27 @@ title = "ARES Gitleaks Configuration"
 useDefault = true
 
 [allowlist]
-description = "Allow synthetic red-team/test fixtures and documented placeholder keys only."
+description = "Allow synthetic red-team/test fixtures, SHA-256 key digests, and documented placeholder keys only."
+regexTarget = "line"
 paths = [
   '''^\.env\.example$''',
-  '''^backend/tests/''',
-  '''^tests/''',
-  '''^evaluation/''',
-  '''^backend/ares/redteam/payloads\.py$''',
-  '''^backend/ares/intent/data/''',
-  '''^backend/ares/training/compression_adapter_trainer\.py$''',
-  '''^backend/ares/training/distilbert_intent_trainer\.py$''',
-  '''^docs/''',
-  '''^backend/scripts/ci_live_smoke_test\.py$''',
+  '''^backend[\\/]tests[\\/]''',
+  '''^tests[\\/]''',
+  '''^evaluation[\\/]''',
+  '''^backend[\\/]ares[\\/]redteam[\\/]payloads\.py$''',
+  '''^backend[\\/]ares[\\/]intent[\\/]data[\\/]''',
+  '''^backend[\\/]ares[\\/]training[\\/]compression_adapter_trainer\.py$''',
+  '''^backend[\\/]ares[\\/]training[\\/]distilbert_intent_trainer\.py$''',
+  '''^docs[\\/]''',
+  '''^backend[\\/]scripts[\\/]ci_live_smoke_test\.py$''',
 ]
 regexes = [
   '''ares-dev-secret-key-42''',
-  '''ares-test-[a-z0-9-]+''',
+  '''ares-test-(?:admin|tenant|hmac|key)[a-z0-9-]*''',
   '''CANARY_[A-Z0-9_]+''',
   '''your_[a-z_]+_here''',
-  '''mock-[a-z]+-key''',
-  '''"api_key_hash": "[0-9a-f]{64}"''',
-  '''ci-[a-z0-9-]+''',
+  '''mock-(?:groq|gemini|nvidia|openai|llm)-key''',
+  '''ci-(?:master|hmac|fp|smoke)-[a-z0-9-]+''',
   '''ares_tnt_org_[a-z0-9_]+_ci_[a-z0-9_]+''',
+  '''"api_key_hash"\s*:\s*"[0-9a-f]{64}"''',
 ]
