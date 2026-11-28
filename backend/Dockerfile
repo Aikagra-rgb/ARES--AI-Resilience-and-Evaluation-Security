@@ -7,11 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 1) Third-party dependencies derived from pyproject.toml so this layer caches cleanly.
-COPY pyproject.toml ./
-RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/runtime-requirements.txt \
-    && pip install -r /tmp/runtime-requirements.txt \
-    && rm /tmp/runtime-requirements.txt
+# 1) Third-party dependencies installed strictly from the canonical lockfile.
+COPY requirements.lock pyproject.toml ./
+RUN pip install -r requirements.lock
 
 # 2) Application code and packaged red-team target/generator modules.
 COPY app ./app
@@ -23,7 +21,6 @@ COPY tests/redteam ./tests/redteam
 
 # 3) Baseline models/stats + deterministic build-time per-client model compilation.
 COPY data/models ./data/models
-COPY data/redteam_findings.json ./data/redteam_findings.json
 COPY ml_vector_analysis_report.json ./
 RUN ENVIRONMENT=test DATABASE_URL=sqlite:///:memory: python -m ares.training.client_model_trainer --org=all
 

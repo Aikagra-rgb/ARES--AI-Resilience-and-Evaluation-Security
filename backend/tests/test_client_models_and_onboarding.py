@@ -342,7 +342,8 @@ def test_health_and_healthz_probes_non_blocking_and_partner_script_consistency()
     repo_root = Path(__file__).resolve().parent.parent.parent
     deploy_script = (repo_root / "deploy_partner.sh").read_text(encoding="utf-8")
     assert "--compose-file=" in deploy_script
-    assert "docker-compose.full.yml" in deploy_script
+    assert 'COMPOSE_FILE="docker-compose.yml"' in deploy_script
+    assert (repo_root / "docker-compose.yml").is_file()
     assert (repo_root / "docker-compose.full.yml").is_file()
 
     headers = {"X-Ares-Api-Key": settings.api_key}
@@ -368,7 +369,7 @@ def test_health_and_healthz_probes_non_blocking_and_partner_script_consistency()
 
 
 def test_optimizer_api_per_client_model_and_inference_mode():
-    """Verify Prompt Optimizer routes through per-client trained models when org_id and inference_mode are given."""
+    """Verify Prompt Optimizer routes through per-client trained models with honest engine labels."""
     headers = {"X-Ares-Api-Key": settings.api_key}
     payload = {
         "prompt": (
@@ -378,14 +379,21 @@ def test_optimizer_api_per_client_model_and_inference_mode():
         "org_id": "org_acme_fintech",
         "inference_mode": "client_adapter",
     }
-    with TestClient(app) as client:
-        resp = client.post("/api/v1/optimizer/optimize", json=payload, headers=headers)
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["org_id"] == "org_acme_fintech"
-        assert "org_acme_fintech" in body["classifier_used"]
-        assert body["client_adapter_applied"] is True
-        assert body["compression_engine"].startswith("client_adapter:")
+    with patch(
+        "ares.vectordb.embedder.GeminiEmbedder.embed_text",
+        new=AsyncMock(return_value=[0.5] * 64),
+    ):
+        with TestClient(app) as client:
+            resp = client.post("/api/v1/optimizer/optimize", json=payload, headers=headers)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["org_id"] == "org_acme_fintech"
+            assert "org_acme_fintech" in body["classifier_used"]
+            assert body["client_adapter_applied"] is True
+            assert body["client_lora_applied"] is False
+            assert body["engine_kind"] == "rules_adapter"
+            assert body["compression_engine"].startswith("rules_adapter:")
+            assert body["verification_status"] == "verified"
 
 
 def test_redteam_targets_api_list_and_run():
@@ -528,12 +536,14 @@ def test_redteam_db_persistence_and_history_endpoints():
 
 
 def test_redteam_qdrant_sync_and_external_target_endpoint(monkeypatch):
-    """Verify custom client target_endpoint_url baseline/protected testing and sync_qdrant upsert."""
+    """Verify external live target testing queues moderation candidates rather than writing directly to Qdrant."""
     from unittest.mock import AsyncMock, MagicMock
 
     import httpx
 
+    from ares.api.routes.moderation import get_moderation_queue
     from ares.gateway.context import APPLICATION_TENANT_REGISTRY
+    from ares.moderation.queue import AttackModerationQueue
     from ares.training.model_registry import DEFAULT_REGISTRY_PATH
 
     registry_snapshot = (
@@ -541,10 +551,12 @@ def test_redteam_qdrant_sync_and_external_target_endpoint(monkeypatch):
     )
     headers = {"X-Ares-Api-Key": settings.api_key}
 
-    fake_upsert = AsyncMock(side_effect=lambda attempts, **kw: len(attempts))
+    fake_upsert = AsyncMock(return_value="pt-staging-1")
     fake_store = MagicMock()
-    fake_store.upsert_attempts_batch = fake_upsert
-    monkeypatch.setattr("ares.api.routes.redteam._get_qdrant_store_for_sync", lambda: fake_store)
+    fake_store.search_similar_attacks = AsyncMock(return_value=[])
+    fake_store.upsert_attempt = fake_upsert
+    mod_queue = AttackModerationQueue(qdrant_store=fake_store, use_db=False)
+    app.dependency_overrides[get_moderation_queue] = lambda: mod_queue
 
     class _FakeHttpResponse:
         def __init__(self, text: str):
@@ -617,13 +629,28 @@ def test_redteam_qdrant_sync_and_external_target_endpoint(monkeypatch):
             assert run_resp.status_code == 200
             body = run_resp.json()
             assert body["org_id"] == "org_ext_staging"
+            assert body["target_mode"] == "external-live-target"
             assert body["catch_rate"] == 1.0
+            assert body["baseline_measured_count"] >= 1
             assert body["baseline_breaches"] >= 1
-            assert body["qdrant_vectors_upserted"] == body["total_attacks"]
-            assert body["qdrant_vectors_upserted"] >= 1
-            assert fake_upsert.await_count >= 1
+            assert body["qdrant_vectors_upserted"] == 0
+            assert body["moderation_candidates_submitted"] == body["total_attacks"]
+            assert fake_upsert.await_count == 0
+
+            pending = client.get("/api/moderation/items?status=pending", headers=headers).json()
+            assert len(pending) == body["total_attacks"]
+            first_id = pending[0]["id"]
+
+            approve_resp = client.post(
+                f"/api/moderation/items/{first_id}/approve",
+                json={"reviewer_id": "secops_reviewer", "notes": "Approved for vector shield"},
+                headers=headers,
+            )
+            assert approve_resp.status_code == 200
+            assert fake_upsert.await_count == 1
             assert fake_upsert.await_args.kwargs["collection_name"] == "org_ext_staging_attacks"
     finally:
+        app.dependency_overrides.pop(get_moderation_queue, None)
         APPLICATION_TENANT_REGISTRY.pop("org_ext_staging", None)
         APPLICATION_TENANT_REGISTRY.pop("ExtStagingApp", None)
         if registry_snapshot is not None:

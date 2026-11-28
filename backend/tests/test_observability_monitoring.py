@@ -16,7 +16,6 @@ from ares.config import settings
 from ares.gateway.enforcer import RuntimeEnforcer
 from ares.observability.metrics import PROMETHEUS_AVAILABLE
 from ares.vectordb.store import QdrantStore
-from ares.observability.metrics import PROMETHEUS_AVAILABLE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -76,6 +75,25 @@ def test_monitoring_provisioning_files_and_dashboard_valid():
     # Blazor web service containerized
     assert "blazor-web" in compose_text
     assert "ares_web_keys" in compose_text
+
+    # Alerts file wired in prometheus and both compose files
+    alerts_yml = REPO_ROOT / "monitoring" / "alerts.yml"
+    assert alerts_yml.is_file()
+    alerts_text = alerts_yml.read_text(encoding="utf-8")
+    assert "AresFastApiDown" in alerts_text
+    assert "/etc/prometheus/alerts.yml" in prom_text
+
+    # Security hardening: neither compose file exposes public non-loopback ports or default admin password
+    prod_compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    for fname, ctext in (("docker-compose.yml", prod_compose), ("docker-compose.full.yml", compose_text)):
+        assert "GF_SECURITY_ADMIN_PASSWORD=admin" not in ctext, f"{fname} uses insecure Grafana admin default"
+        assert "GF_SECURITY_ADMIN_PASSWORD: admin" not in ctext, f"{fname} uses insecure Grafana admin default"
+        for bare_port in ('"8000:8000"', '"5149:8080"', '"5432:5432"', '"6333:6333"', '"6379:6379"', '"9090:9090"', '"3000:3000"', '"8001:8001"', '"11435:11435"'):
+            assert bare_port not in ctext, f"{fname} publishes non-loopback port {bare_port}"
+
+    assert "127.0.0.1:8000:8000" in prod_compose
+    assert "127.0.0.1:5149:8080" in prod_compose
+    assert "ENVIRONMENT: ${ENVIRONMENT:-production}" in prod_compose
 
 
 def test_metrics_endpoint_exposes_gateway_and_optimizer_telemetry():

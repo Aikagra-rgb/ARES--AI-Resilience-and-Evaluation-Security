@@ -66,11 +66,11 @@
         </label>
         <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
             <input type="checkbox" @bind="_autoRetrain" disabled="@_isRunning" />
-            <span>Auto-Retrain Selected Client After Campaign</span>
+            <span>Auto-Retrain Selected Client (Admin / Approved Data Only)</span>
         </label>
         <label style="display:flex;align-items:center;gap:0.45rem;font-size:0.84rem;cursor:pointer;">
             <input type="checkbox" @bind="_syncQdrant" disabled="@_isRunning" />
-            <span>Sync Confirmed Attack Vectors to Qdrant</span>
+            <span>Submit Candidates to Moderation Queue (Human Approval Required)</span>
         </label>
     </div>
 
@@ -103,12 +103,12 @@
         <article class="surface-card metric-card">
             <p class="eyebrow">ARES Catch Rate</p>
             <p class="metric-value accent-green">@((_runResult.CatchRate * 100).ToString("F1"))%</p>
-            <p class="metric-desc">@_runResult.AttacksBlocked / @_runResult.TotalAttacks adversarial attacks blocked</p>
+            <p class="metric-desc">@_runResult.AttacksBlocked / @_runResult.TotalAttacks blocked · Mode: <span class="subtle-code">@_runResult.TargetMode</span></p>
         </article>
         <article class="surface-card metric-card">
             <p class="eyebrow">Baseline Breaches Prevented</p>
             <p class="metric-value" style="color:#f87171;">@_runResult.BaselineBreaches</p>
-            <p class="metric-desc">Unguarded victim leaks stopped by ARES</p>
+            <p class="metric-desc">@_runResult.BaselineMeasuredCount measured · @_runResult.BaselineUnmeasuredCount unmeasured</p>
         </article>
         <article class="surface-card metric-card">
             <p class="eyebrow">False Positive Rate</p>
@@ -120,6 +120,10 @@
             <p class="metric-value" style="color:#fcd34d;">@_runResult.LatencyP50Ms.ToString("F1") / @_runResult.LatencyP99Ms.ToString("F1") ms</p>
             <p class="metric-desc">
                 Run <span class="subtle-code">@_runResult.RunId</span>
+                @if (_runResult.ModerationCandidatesSubmitted > 0)
+                {
+                    <span> · Moderation Queued: @_runResult.ModerationCandidatesSubmitted</span>
+                }
                 @if (_runResult.RetrainedOrgs.Count > 0)
                 {
                     <span> · Retrained: @string.Join(", ", _runResult.RetrainedOrgs)</span>
@@ -189,6 +193,10 @@
                                 @if (!item.ExpectedBlocked)
                                 {
                                     <span style="color:#94a3b8;font-size:0.78rem;">CONTROL</span>
+                                }
+                                else if (!item.BaselineMeasured)
+                                {
+                                    <span style="color:#94a3b8;font-size:0.78rem;">UNMEASURED</span>
                                 }
                                 else if (item.BaselineCompromised)
                                 {

@@ -8,15 +8,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/runtime-requirements.txt \
-    && pip install -r /tmp/runtime-requirements.txt \
-    && rm /tmp/runtime-requirements.txt
+COPY requirements.lock pyproject.toml ./
+RUN pip install -r requirements.lock
 
 COPY app ./app
 COPY ares ./ares
 COPY data/models ./data/models
-COPY data/redteam_findings.json ./data/redteam_findings.json
 COPY tests/targets ./tests/targets
 RUN ENVIRONMENT=test DATABASE_URL=sqlite:///:memory: python -m ares.training.client_model_trainer --org=all \
     && test -f models/org_acme_fintech/intent_classifier/ml_stats.json

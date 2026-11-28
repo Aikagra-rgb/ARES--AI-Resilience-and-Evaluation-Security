@@ -1,29 +1,37 @@
 """Automated red-team test suite attacking operator-controlled targets through ARES Gateway.
 
 Captures per-target catch_rate, false_positive_rate, latency_p50/p99, compares against an
-unprotected baseline, and exports structured findings (`backend/data/redteam_findings.json`)
-for Phase 4 per-client model training.
+unprotected baseline, and exports strictly REDACTED structured findings (hash + metadata +
+bounded sanitized excerpt; zero raw attack prompts) to a test-local temp path.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
 from fastapi.testclient import TestClient
 
+from ares.security.error_sanitizer import sanitize_error_message
 from tests.redteam import TargetAttackCase, TargetAttackGenerator, assert_allowed, assert_blocked
 from tests.targets import app
 
 _ATTACK_CASES = TargetAttackGenerator.generate_attack_cases()
 _BENIGN_CASES = TargetAttackGenerator.generate_benign_cases()
-_FINDINGS_OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "redteam_findings.json"
+
+
+def _redact_prompt(prompt: str) -> tuple[str, str]:
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    collapsed = " ".join(prompt.split())
+    excerpt = sanitize_error_message(collapsed, max_len=64, default_message="[REDACTED]")
+    return digest, excerpt
 
 
 def _percentile(sorted_vals: List[float], pct: float) -> float:
@@ -73,8 +81,8 @@ def test_redteam_benign_control_matrix_allowed(benign_case: TargetAttackCase):
         assert_allowed(resp.json(), context_msg=f"{benign_case.target_name}:{benign_case.case_id}")
 
 
-def test_redteam_suite_metrics_and_export():
-    """Run baseline vs ARES-protected matrix, enforce SLA gates, and export Phase 4 findings."""
+def test_redteam_suite_metrics_and_export(tmp_path: Path):
+    """Run baseline vs ARES-protected matrix, enforce SLA gates, and export redacted report."""
     assert len(_ATTACK_CASES) >= 30
     assert len(_BENIGN_CASES) >= 15
 
@@ -86,6 +94,8 @@ def test_redteam_suite_metrics_and_export():
 
     unprotected_breaches = 0
     findings: List[Dict[str, Any]] = []
+    now_utc = datetime.now(timezone.utc)
+    expires_at = (now_utc + timedelta(days=30)).isoformat()
 
     with TestClient(app) as client:
         for case in _ATTACK_CASES:
@@ -119,20 +129,26 @@ def test_redteam_suite_metrics_and_export():
             if prot_resp.get("blocked") is True:
                 per_target_caught[case.org_id] += 1
 
+            digest, excerpt = _redact_prompt(case.query)
             findings.append(
                 {
                     "case_id": case.case_id,
                     "organization_id": case.org_id,
                     "target_name": case.target_name,
+                    "target_mode": "reference-simulator",
                     "attack_category": case.attack_category,
-                    "prompt": case.query,
+                    "prompt_sha256": digest,
+                    "prompt_excerpt": excerpt,
+                    "prompt_length": len(case.query),
                     "label": 1,
                     "decision": prot_resp.get("action"),
                     "blocked": prot_resp.get("blocked"),
+                    "baseline_measured": True,
                     "matched_technique": prot_resp.get("matched_technique"),
                     "severity": prot_resp.get("severity"),
                     "risk_score": prot_resp.get("risk_score"),
                     "latency_ms": round(elapsed_ms, 2),
+                    "expires_at": expires_at,
                 }
             )
 
@@ -152,20 +168,26 @@ def test_redteam_suite_metrics_and_export():
             if ben_resp.get("blocked") is True or ben_resp.get("action") != "ALLOW":
                 per_target_fp[case.org_id] += 1
 
+            digest, excerpt = _redact_prompt(case.query)
             findings.append(
                 {
                     "case_id": case.case_id,
                     "organization_id": case.org_id,
                     "target_name": case.target_name,
+                    "target_mode": "reference-simulator",
                     "attack_category": "benign",
-                    "prompt": case.query,
+                    "prompt_sha256": digest,
+                    "prompt_excerpt": excerpt,
+                    "prompt_length": len(case.query),
                     "label": 0,
                     "decision": ben_resp.get("action"),
                     "blocked": ben_resp.get("blocked"),
+                    "baseline_measured": False,
                     "matched_technique": ben_resp.get("matched_technique"),
                     "severity": ben_resp.get("severity"),
                     "risk_score": ben_resp.get("risk_score"),
                     "latency_ms": round(elapsed_ms, 2),
+                    "expires_at": expires_at,
                 }
             )
 
@@ -200,7 +222,10 @@ def test_redteam_suite_metrics_and_export():
         }
 
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now_utc.isoformat(),
+        "redacted": True,
+        "target_mode": "reference-simulator",
+        "retention_days": 30,
         "summary": {
             "total_attacks": total_attacks,
             "total_caught": total_caught,
@@ -214,6 +239,10 @@ def test_redteam_suite_metrics_and_export():
         "findings": findings,
     }
 
-    _FINDINGS_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _FINDINGS_OUTPUT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    assert _FINDINGS_OUTPUT_PATH.exists()
+    output_path = tmp_path / "redteam_findings.json"
+    output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    assert output_path.exists()
+    for row in findings:
+        assert "prompt" not in row
+        assert len(row["prompt_sha256"]) == 64
+        assert len(row["prompt_excerpt"]) <= 64

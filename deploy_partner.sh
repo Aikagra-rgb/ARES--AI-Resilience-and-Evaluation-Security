@@ -5,7 +5,8 @@
 # gateway sidecar pointing to the client's isolated models and canary token.
 #
 # Usage:
-#   ./deploy_partner.sh --org=org_acme_fintech --api-key=YOUR_KEY [--app=AcmeFintechRAG] [--compose-file=docker-compose.full.yml]
+#   ./deploy_partner.sh --org=org_acme_fintech --api-key=YOUR_KEY [--app=AcmeFintechRAG] [--compose-file=docker-compose.yml]
+#   (For local full-stack development only, pass --compose-file=docker-compose.full.yml)
 # ==============================================================================
 
 set -euo pipefail
@@ -14,7 +15,7 @@ ORG_ID=""
 APP_NAME=""
 API_KEY="${ARES_API_KEY:-}"
 GATEWAY_PORT="${ARES_SIDECAR_PORT:-8080}"
-COMPOSE_FILE="docker-compose.full.yml"
+COMPOSE_FILE="docker-compose.yml"
 
 for arg in "$@"; do
   case "$arg" in

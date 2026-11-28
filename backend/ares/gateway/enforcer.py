@@ -1181,6 +1181,8 @@ class RuntimeEnforcer:
             "optimized_tokens": 0,
             "optimization_applied": False,
             "compression_engine": None,
+            "engine_kind": None,
+            "verification_status": None,
             "outbound_redactions": [],
             "outbound_blocked": False,
             "finish_reason": "stop",
@@ -1358,6 +1360,8 @@ class RuntimeEnforcer:
                     metadata["finish_reason"] = "content_filter"
                     return (decision, refusal, metadata) if return_metadata else (decision, refusal)
 
+                metadata["verification_status"] = getattr(opt_res, "verification_status", None)
+                metadata["engine_kind"] = getattr(opt_res, "engine_kind", None)
                 if opt_res.optimized_prompt:
                     optimized_user_content = opt_res.optimized_prompt
                     metadata["token_savings_pct"] = float(opt_res.token_savings_pct or 0.0)

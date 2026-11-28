@@ -47,7 +47,24 @@ class OptimizationStatus(str, Enum):
     SUCCESS = "success"
     BLOCKED_SECURITY = "blocked_security"
     DRIFT_WARNING = "drift_warning"
+    VERIFICATION_UNAVAILABLE = "verification_unavailable"
     FALLBACK = "fallback"
+
+
+class CompressionEngineKind(str, Enum):
+    """Unambiguous optimizer synthesis path classification."""
+    RULES_ADAPTER = "rules_adapter"
+    CLIENT_LORA_ADAPTER = "client_lora_adapter"
+    GLOBAL_LORA = "global_lora"
+    BASE_MODEL_FALLBACK = "base_model_fallback"
+    BLOCKED = "blocked"
+
+
+_HIGH_ASSURANCE_INTENTS = frozenset({
+    PromptIntent.DATA_EXTRACTION_JSON,
+    PromptIntent.SYSTEM_DIRECTIVE,
+    PromptIntent.CODING_TECHNICAL,
+})
 
 
 class OptimizedPromptResult(BaseModel):
@@ -64,6 +81,7 @@ class OptimizedPromptResult(BaseModel):
     semantic_fidelity: float = Field(ge=0.0, le=1.0)
     target_fidelity: float = Field(default=0.85, ge=0.0, le=1.0)
     verification_passed: bool = True
+    verification_status: str = "verified"
     mitigated_threats: List[str] = Field(default_factory=list)
     security_verdict: str
     security_risk_score: float = Field(ge=0.0, le=1.0)
@@ -72,8 +90,10 @@ class OptimizedPromptResult(BaseModel):
     reasoning: Optional[str] = None
     org_id: str = "default"
     classifier_used: str = "global-sklearn"
-    compression_engine: str = "auto"
+    compression_engine: str = "rules_adapter:default"
+    engine_kind: str = CompressionEngineKind.RULES_ADAPTER.value
     client_adapter_applied: bool = False
+    client_lora_applied: bool = False
     protected_terms_preserved: bool = True
     missing_protected_terms: List[str] = Field(default_factory=list)
 
@@ -593,8 +613,10 @@ class UserPromptOptimizer:
         stage1_tokens: int,
         orig_tokens: int,
         engine_label: str,
+        engine_kind: str,
+        client_lora_applied: bool,
         fallback_engine_label: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str, bool]:
         optimized_text = str(raw_out).strip()
         if optimized_text.startswith("```") and optimized_text.endswith("```"):
             lines = optimized_text.splitlines()
@@ -615,16 +637,16 @@ class UserPromptOptimizer:
             optimized_text = f"Write Python script:\n- Task: {stage1_compressed}"
 
         if _estimate_tokens(optimized_text) >= orig_tokens and stage1_tokens < orig_tokens:
-            return stage1_compressed, fallback_engine_label
+            return stage1_compressed, fallback_engine_label, CompressionEngineKind.RULES_ADAPTER.value, False
 
-        return optimized_text, engine_label
+        return optimized_text, engine_label, engine_kind, client_lora_applied
 
     async def _try_lora_rewrite(
         self,
         messages: List[ChatMessage],
         model_name: Optional[str] = None,
         org_id: Optional[str] = None,
-    ) -> tuple[Optional[str], str]:
+    ) -> tuple[Optional[str], str, str, bool]:
         raw_lora_url = getattr(self.settings, "lora_server_url", "http://localhost:11435/v1") or "http://localhost:11435/v1"
         lora_url = raw_lora_url.strip().rstrip("/")
         if not lora_url.endswith("/v1"):
@@ -649,11 +671,25 @@ class UserPromptOptimizer:
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_out = data["choices"][0]["message"]["content"]
-                    logger.info("Successfully optimized prompt using Native Fine-Tuned LoRA Adapter (%s)", lora_model)
-                    return raw_out, f"lora:{lora_model}"
+                    used_adapter = str(data.get("adapter") or "default").strip()
+                    if org_id and org_id != "default" and used_adapter == org_id:
+                        logger.info("Optimized prompt via client LoRA adapter (%s)", org_id)
+                        return (
+                            raw_out,
+                            f"client_lora_adapter:{org_id}",
+                            CompressionEngineKind.CLIENT_LORA_ADAPTER.value,
+                            True,
+                        )
+                    logger.info("Optimized prompt via global LoRA adapter (%s)", lora_model)
+                    return (
+                        raw_out,
+                        f"global_lora:{lora_model}",
+                        CompressionEngineKind.GLOBAL_LORA.value,
+                        False,
+                    )
         except Exception as lora_err:
             logger.debug("Native LoRA server offline (%s)", lora_err)
-        return None, ""
+        return None, "", CompressionEngineKind.RULES_ADAPTER.value, False
 
     def _resolve_cloud_provider_and_model(
         self,
@@ -803,6 +839,7 @@ class UserPromptOptimizer:
                 semantic_fidelity=0.0,
                 target_fidelity=round(target_fidelity if target_fidelity is not None else 0.80, 2),
                 verification_passed=False,
+                verification_status="blocked",
                 mitigated_threats=blocked_threats,
                 security_verdict="BLOCKED_ADVERSARIAL_PAYLOAD",
                 security_risk_score=max(0.85, risk_score_norm),
@@ -817,7 +854,9 @@ class UserPromptOptimizer:
                     else "global-gateway"
                 ),
                 compression_engine="blocked",
+                engine_kind=CompressionEngineKind.BLOCKED.value,
                 client_adapter_applied=has_client_adapter,
+                client_lora_applied=False,
             )
 
         # ---------------------------------------------------------------------
@@ -946,27 +985,33 @@ class UserPromptOptimizer:
         if self.llm_client is None:
             self.llm_client = LLMClient()
 
-        fallback_engine_label = (
-            f"client_adapter_fallback:{effective_org_id}" if client_adapter_applied else "stage1_fallback"
+        rules_engine_label = (
+            f"rules_adapter:{effective_org_id}" if client_adapter_applied else "rules_adapter:default"
         )
         optimized_text = ""
-        compression_engine = fallback_engine_label
+        compression_engine = rules_engine_label
+        engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+        client_lora_applied = False
 
-        if norm_mode == "client_adapter":
+        if norm_mode in ("client_adapter", "rules_adapter"):
             optimized_text = stage1_compressed
-            compression_engine = f"client_adapter:{effective_org_id}"
+            compression_engine = rules_engine_label
+            engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+            client_lora_applied = False
         elif norm_mode == "auto" and prefer_rule_compression and stage1_savings_pct >= 0.25:
             optimized_text = stage1_compressed
-            compression_engine = (
-                f"client_adapter:{effective_org_id}" if client_adapter_applied else "stage1_lexical"
-            )
+            compression_engine = rules_engine_label
+            engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+            client_lora_applied = False
         else:
             try:
                 raw_out = None
-                chosen_engine = fallback_engine_label
+                chosen_engine = rules_engine_label
+                chosen_kind = CompressionEngineKind.RULES_ADAPTER.value
+                chosen_client_lora = False
 
                 if norm_mode == "lora":
-                    raw_out, chosen_engine = await self._try_lora_rewrite(
+                    raw_out, chosen_engine, chosen_kind, chosen_client_lora = await self._try_lora_rewrite(
                         messages, model_name=model_name, org_id=effective_org_id
                     )
                 elif norm_mode == "cloud":
@@ -980,7 +1025,9 @@ class UserPromptOptimizer:
                             max_tokens=1000,
                         )
                         raw_out = getattr(resp, "text", None) or getattr(resp, "content", "")
-                        chosen_engine = f"{cloud_prov}:{cloud_model}"
+                        chosen_engine = f"base_model_fallback:{cloud_prov}:{cloud_model}"
+                        chosen_kind = CompressionEngineKind.BASE_MODEL_FALLBACK.value
+                        chosen_client_lora = False
                 elif norm_mode == "ollama":
                     primary_model = model_name or getattr(self.settings, "ollama_optimizer_model", "ares-optimizer:8b") or "ares-optimizer:8b"
                     fallback_model = self.settings.hardener_model or "llama3.1:8b"
@@ -1004,12 +1051,18 @@ class UserPromptOptimizer:
                         )
                         used_model = fallback_model
                     raw_out = getattr(resp, "text", None) or getattr(resp, "content", "")
-                    chosen_engine = f"ollama:{used_model}"
+                    if used_model == primary_model and "ares-optimizer" in used_model.lower():
+                        chosen_engine = f"global_lora:{used_model}"
+                        chosen_kind = CompressionEngineKind.GLOBAL_LORA.value
+                    else:
+                        chosen_engine = f"base_model_fallback:ollama:{used_model}"
+                        chosen_kind = CompressionEngineKind.BASE_MODEL_FALLBACK.value
+                    chosen_client_lora = False
                 else:
                     # "auto" (default): Native LoRA -> configured provider/Ollama
                     use_lora = getattr(self.settings, "use_lora_server", True)
                     if use_lora:
-                        raw_out, chosen_engine = await self._try_lora_rewrite(
+                        raw_out, chosen_engine, chosen_kind, chosen_client_lora = await self._try_lora_rewrite(
                             messages, model_name=model_name, org_id=effective_org_id
                         )
 
@@ -1038,36 +1091,53 @@ class UserPromptOptimizer:
                             )
                             used_model = fallback_model
                         raw_out = getattr(resp, "text", None) or getattr(resp, "content", "")
-                        chosen_engine = f"{prov_str}:{used_model}"
+                        if used_model == primary_model and "ares-optimizer" in used_model.lower():
+                            chosen_engine = f"global_lora:{used_model}"
+                            chosen_kind = CompressionEngineKind.GLOBAL_LORA.value
+                        else:
+                            chosen_engine = f"base_model_fallback:{prov_str}:{used_model}"
+                            chosen_kind = CompressionEngineKind.BASE_MODEL_FALLBACK.value
+                        chosen_client_lora = False
 
                 if raw_out is not None and str(raw_out).strip():
-                    optimized_text, compression_engine = await self._post_process_llm_output(
-                        raw_out=raw_out,
-                        intent=intent,
-                        stage1_compressed=stage1_compressed,
-                        stage1_tokens=stage1_tokens,
-                        orig_tokens=orig_tokens,
-                        engine_label=chosen_engine,
-                        fallback_engine_label=fallback_engine_label,
+                    optimized_text, compression_engine, engine_kind, client_lora_applied = (
+                        await self._post_process_llm_output(
+                            raw_out=raw_out,
+                            intent=intent,
+                            stage1_compressed=stage1_compressed,
+                            stage1_tokens=stage1_tokens,
+                            orig_tokens=orig_tokens,
+                            engine_label=chosen_engine,
+                            engine_kind=chosen_kind,
+                            client_lora_applied=chosen_client_lora,
+                            fallback_engine_label=rules_engine_label,
+                        )
                     )
                 else:
                     optimized_text = stage1_compressed
-                    compression_engine = fallback_engine_label
+                    compression_engine = rules_engine_label
+                    engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+                    client_lora_applied = False
             except Exception as exc:
-                logger.warning("LLM optimization synthesis failed (%s), falling back to Stage-1 compression", exc)
+                logger.warning("LLM optimization synthesis failed (%s), falling back to Stage-1 rules compression", exc)
                 optimized_text = stage1_compressed
-                compression_engine = fallback_engine_label
+                compression_engine = rules_engine_label
+                engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+                client_lora_applied = False
 
         # ---------------------------------------------------------------------
-        # Step 5: Semantic Fidelity & Structural Verification (+ Per-Client Thresholds)
+        # Step 5: Fail-Closed Semantic Fidelity & Structural Verification
         # ---------------------------------------------------------------------
-        fidelity_score = 0.90
+        fidelity_available = False
+        fidelity_score = 0.0
         try:
             vec_orig = await self.embedder.embed_text(user_prompt)
             vec_opt = await self.embedder.embed_text(optimized_text)
-            fidelity_score = round(_cosine_similarity(vec_orig, vec_opt), 3)
+            if vec_orig and vec_opt and len(vec_orig) == len(vec_opt):
+                fidelity_score = round(_cosine_similarity(vec_orig, vec_opt), 3)
+                fidelity_available = True
         except Exception as exc:
-            logger.warning("Semantic embedding check skipped (%s), default to 0.90", exc)
+            logger.warning("Semantic fidelity verification unavailable (%s); failing closed", exc)
 
         opt_tokens = _estimate_tokens(optimized_text)
         token_savings_pct = round(max(0.0, (orig_tokens - opt_tokens) / orig_tokens), 3) if orig_tokens > 0 else 0.0
@@ -1102,6 +1172,7 @@ class UserPromptOptimizer:
                     semantic_fidelity=0.0,
                     target_fidelity=effective_target_fidelity,
                     verification_passed=False,
+                    verification_status="blocked",
                     mitigated_threats=mitigated_threats or ["post_optimization_policy_violation"],
                     security_verdict="BLOCKED_POST_OPTIMIZATION_GATEWAY",
                     security_risk_score=0.95,
@@ -1110,45 +1181,13 @@ class UserPromptOptimizer:
                     reasoning="Post-optimization gateway check blocked unsafe or canary-leaking rewritten output.",
                     org_id=effective_org_id,
                     classifier_used=classifier_used,
-                    compression_engine=compression_engine,
+                    compression_engine="blocked",
+                    engine_kind=CompressionEngineKind.BLOCKED.value,
                     client_adapter_applied=client_adapter_applied,
+                    client_lora_applied=False,
                 )
 
-        status = OptimizationStatus.SUCCESS
-        verification_passed = True
-        reasoning = "Prompt successfully optimized and compressed."
-        if fidelity_score < effective_target_fidelity:
-            if (
-                fidelity_score >= 0.70
-                and intent == PromptIntent.DATA_EXTRACTION_JSON
-                and verify_json_schema_preserved(user_prompt, optimized_text)
-            ):
-                status = OptimizationStatus.SUCCESS
-                verification_passed = True
-                reasoning = (
-                    f"Prompt successfully optimized; JSON schema preservation verified "
-                    f"(fidelity {fidelity_score:.2f})."
-                )
-            elif (
-                fidelity_score >= 0.70
-                and intent == PromptIntent.SYSTEM_DIRECTIVE
-                and verify_directive_markers(user_prompt, optimized_text, intent)
-            ):
-                status = OptimizationStatus.SUCCESS
-                verification_passed = True
-                reasoning = (
-                    f"Prompt successfully optimized; directive guardrail markers verified "
-                    f"(fidelity {fidelity_score:.2f})."
-                )
-            else:
-                status = OptimizationStatus.DRIFT_WARNING
-                verification_passed = False
-                reasoning = (
-                    f"Semantic fidelity ({fidelity_score:.2f}) fell below target "
-                    f"({effective_target_fidelity:.2f})."
-                )
-
-        # Verify domain-critical protected_terms from client compression adapter
+        # Verify domain-critical protected_terms from client rules configuration
         raw_adapter_terms = client_adapter_cfg.get("protected_terms") or []
         terms_ok, missing_terms = verify_protected_terms_preserved(
             prompt_to_optimize,
@@ -1169,14 +1208,132 @@ class UserPromptOptimizer:
                     if orig_tokens > 0
                     else 0.0
                 )
-                compression_engine = fallback_engine_label
+                compression_engine = rules_engine_label
+                engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+                client_lora_applied = False
                 terms_ok = True
                 missing_terms = []
 
-        if not terms_ok:
-            status = OptimizationStatus.DRIFT_WARNING
+        final_optimized_text: Optional[str] = optimized_text
+        if not fidelity_available:
+            status = OptimizationStatus.VERIFICATION_UNAVAILABLE
             verification_passed = False
-            reasoning = f"{reasoning} Missing protected client terms: {', '.join(missing_terms)}."
+            verification_status = "verification_unavailable"
+            llm_rewrite_used = engine_kind in (
+                CompressionEngineKind.CLIENT_LORA_ADAPTER.value,
+                CompressionEngineKind.GLOBAL_LORA.value,
+                CompressionEngineKind.BASE_MODEL_FALLBACK.value,
+            )
+            if llm_rewrite_used:
+                if intent in _HIGH_ASSURANCE_INTENTS:
+                    final_optimized_text = None
+                    opt_tokens = 0
+                    token_savings_pct = 0.0
+                    reasoning = (
+                        "Semantic fidelity verification unavailable; rejected unverified LLM rewrite "
+                        "for high-assurance prompt intent."
+                    )
+                else:
+                    stage1_terms_ok, stage1_missing = verify_protected_terms_preserved(
+                        prompt_to_optimize,
+                        stage1_compressed,
+                        raw_adapter_terms,
+                    )
+                    terms_ok = stage1_terms_ok
+                    missing_terms = stage1_missing
+                    compression_engine = rules_engine_label
+                    engine_kind = CompressionEngineKind.RULES_ADAPTER.value
+                    client_lora_applied = False
+                    if stage1_terms_ok:
+                        final_optimized_text = stage1_compressed
+                        opt_tokens = stage1_tokens
+                        token_savings_pct = (
+                            round(max(0.0, (orig_tokens - stage1_tokens) / orig_tokens), 3)
+                            if orig_tokens > 0
+                            else 0.0
+                        )
+                        reasoning = (
+                            "Semantic fidelity verification unavailable; reverted LLM rewrite to "
+                            "deterministic Stage-1 rules compaction."
+                        )
+                    else:
+                        final_optimized_text = None
+                        opt_tokens = 0
+                        token_savings_pct = 0.0
+                        reasoning = (
+                            "Semantic fidelity verification unavailable and Stage-1 rules dropped "
+                            "protected terms; prompt rewrite rejected."
+                        )
+            else:
+                structural_ok = terms_ok
+                if structural_ok and intent == PromptIntent.DATA_EXTRACTION_JSON:
+                    structural_ok = verify_json_schema_preserved(user_prompt, stage1_compressed)
+                elif structural_ok and intent == PromptIntent.SYSTEM_DIRECTIVE:
+                    structural_ok = verify_directive_markers(user_prompt, stage1_compressed, intent)
+                if structural_ok:
+                    final_optimized_text = stage1_compressed
+                    opt_tokens = stage1_tokens
+                    token_savings_pct = (
+                        round(max(0.0, (orig_tokens - stage1_tokens) / orig_tokens), 3)
+                        if orig_tokens > 0
+                        else 0.0
+                    )
+                    reasoning = (
+                        "Semantic fidelity verification unavailable; retained deterministic Stage-1 "
+                        "rules compaction after structural checks."
+                    )
+                else:
+                    final_optimized_text = None
+                    opt_tokens = 0
+                    token_savings_pct = 0.0
+                    reasoning = (
+                        "Semantic fidelity verification unavailable and structural invariants failed; "
+                        "prompt rewrite rejected."
+                    )
+        else:
+            status = OptimizationStatus.SUCCESS
+            verification_passed = True
+            verification_status = "verified"
+            reasoning = "Prompt successfully optimized and compressed."
+            if fidelity_score < effective_target_fidelity:
+                if (
+                    fidelity_score >= 0.70
+                    and intent == PromptIntent.DATA_EXTRACTION_JSON
+                    and verify_json_schema_preserved(user_prompt, optimized_text)
+                ):
+                    status = OptimizationStatus.SUCCESS
+                    verification_passed = True
+                    verification_status = "verified"
+                    reasoning = (
+                        f"Prompt successfully optimized; JSON schema preservation verified "
+                        f"(fidelity {fidelity_score:.2f})."
+                    )
+                elif (
+                    fidelity_score >= 0.70
+                    and intent == PromptIntent.SYSTEM_DIRECTIVE
+                    and verify_directive_markers(user_prompt, optimized_text, intent)
+                ):
+                    status = OptimizationStatus.SUCCESS
+                    verification_passed = True
+                    verification_status = "verified"
+                    reasoning = (
+                        f"Prompt successfully optimized; directive guardrail markers verified "
+                        f"(fidelity {fidelity_score:.2f})."
+                    )
+                else:
+                    status = OptimizationStatus.DRIFT_WARNING
+                    verification_passed = False
+                    verification_status = "drift_detected"
+                    reasoning = (
+                        f"Semantic fidelity ({fidelity_score:.2f}) fell below target "
+                        f"({effective_target_fidelity:.2f})."
+                    )
+
+            if not terms_ok:
+                status = OptimizationStatus.DRIFT_WARNING
+                verification_passed = False
+                verification_status = "drift_detected"
+                reasoning = f"{reasoning} Missing protected client terms: {', '.join(missing_terms)}."
 
         if mitigated_threats and status == OptimizationStatus.SUCCESS:
             reasoning = f"{reasoning} Hardened against red-team vectors: {', '.join(mitigated_threats)}."
@@ -1205,7 +1362,7 @@ class UserPromptOptimizer:
         return OptimizedPromptResult(
             status=status,
             original_prompt=user_prompt,
-            optimized_prompt=optimized_text,
+            optimized_prompt=final_optimized_text,
             intent=intent,
             intent_confidence=round(intent_res.confidence, 3),
             directive_name=directive.display_name,
@@ -1215,6 +1372,7 @@ class UserPromptOptimizer:
             semantic_fidelity=fidelity_score,
             target_fidelity=effective_target_fidelity,
             verification_passed=verification_passed,
+            verification_status=verification_status,
             mitigated_threats=mitigated_threats,
             security_verdict=sec_verdict,
             security_risk_score=round(max(sec_result.total_confidence, gw_risk), 2),
@@ -1224,7 +1382,9 @@ class UserPromptOptimizer:
             org_id=effective_org_id,
             classifier_used=classifier_used,
             compression_engine=compression_engine,
+            engine_kind=engine_kind,
             client_adapter_applied=client_adapter_applied,
+            client_lora_applied=client_lora_applied,
             protected_terms_preserved=terms_ok,
             missing_protected_terms=missing_terms,
         )
@@ -1309,13 +1469,18 @@ class UserPromptOptimizer:
             "status": "completed",
             "message": f"Compressed {result.original_tokens} -> {result.optimized_tokens} tokens ({int(result.token_savings_pct * 100)}% reduction)",
         }
+        verify_msg = (
+            "Semantic verification unavailable — failed closed"
+            if result.status == OptimizationStatus.VERIFICATION_UNAVAILABLE
+            else f"Semantic fidelity {result.semantic_fidelity:.3f} vs {result.target_fidelity:.2f} target ({'PASSED' if result.verification_passed else 'FALLBACK'})"
+        )
         yield {
             "event": "stage",
             "stage": "fidelity_verification",
             "step": 5,
             "total_steps": 5,
-            "status": "completed",
-            "message": f"Semantic fidelity {result.semantic_fidelity:.3f} vs {result.target_fidelity:.2f} target ({'PASSED' if result.verification_passed else 'FALLBACK'})",
+            "status": "completed" if result.verification_passed else "warning",
+            "message": verify_msg,
         }
         yield {
             "event": "complete",

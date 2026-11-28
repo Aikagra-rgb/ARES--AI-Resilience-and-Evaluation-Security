@@ -356,10 +356,13 @@ public sealed record OptimizePromptResponse(
     IReadOnlyList<string>? MitigatedThreats = null,
     string OrgId = "default",
     string ClassifierUsed = "global-sklearn",
-    string CompressionEngine = "auto",
+    string CompressionEngine = "rules_adapter:default",
     bool ClientAdapterApplied = false,
     bool ProtectedTermsPreserved = true,
-    IReadOnlyList<string>? MissingProtectedTerms = null);
+    IReadOnlyList<string>? MissingProtectedTerms = null,
+    string EngineKind = "rules_adapter",
+    bool ClientLoraApplied = false,
+    string VerificationStatus = "verified");
 
 public sealed record IntentInfoResponse(
     string Intent,
@@ -409,7 +412,10 @@ public sealed record RedTeamCaseResult(
     string Action,
     string? MatchedTechnique,
     bool CanaryLeaked,
-    double LatencyMs);
+    double LatencyMs,
+    string PromptSha256 = "",
+    string TargetMode = "reference-simulator",
+    bool BaselineMeasured = true);
 
 public sealed record RedTeamTargetRunResponse(
     string RunId,
@@ -429,7 +435,11 @@ public sealed record RedTeamTargetRunResponse(
     IReadOnlyList<string> RetrainedOrgs,
     IReadOnlyList<RedTeamCaseResult> Results,
     int QdrantVectorsUpserted = 0,
-    bool PersistedToDb = false);
+    bool PersistedToDb = false,
+    string TargetMode = "reference-simulator",
+    int BaselineMeasuredCount = 0,
+    int BaselineUnmeasuredCount = 0,
+    int ModerationCandidatesSubmitted = 0);
 
 public sealed record RedTeamCampaignSummary(
     string RunId,
@@ -447,7 +457,11 @@ public sealed record RedTeamCampaignSummary(
     [property: System.Text.Json.Serialization.JsonPropertyName("latency_p99_ms")] double LatencyP99Ms,
     bool FindingsExported,
     int QdrantVectorsUpserted,
-    IReadOnlyList<string> RetrainedOrgs);
+    IReadOnlyList<string> RetrainedOrgs,
+    string TargetMode = "reference-simulator",
+    int BaselineMeasuredCount = 0,
+    int BaselineUnmeasuredCount = 0,
+    int ModerationCandidatesSubmitted = 0);
 
 
 

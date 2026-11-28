@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     api_key: str = Field(default=_DEV_API_KEY, alias="ARES_API_KEY")
     auth_enabled: bool = Field(default=True, alias="ARES_AUTH_ENABLED")
     
-    # HMAC Request Integrity & Signing
-    hmac_enforce_mode: str = Field(default="permissive", alias="HMAC_ENFORCE_MODE")
+    # HMAC Request Integrity & Signing (None resolves to 'permissive' in dev/test, 'enforcing_critical' outside dev)
+    hmac_enforce_mode: Optional[str] = Field(default=None, alias="HMAC_ENFORCE_MODE")
     hmac_secret: str = Field(default=_DEV_API_KEY, alias="HMAC_SECRET")
     hmac_max_clock_skew: int = Field(default=300, alias="HMAC_MAX_CLOCK_SKEW")
     
@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
     tenant_api_keys: str = Field(default="", alias="ARES_TENANT_API_KEYS")
     
-    # Gateway Resilience & Circuit Breaker
-    gateway_fail_closed_on_outage: bool = Field(default=False, alias="GATEWAY_FAIL_CLOSED_ON_OUTAGE")
+    # Gateway Resilience & Circuit Breaker (None resolves to False in dev/test, True outside dev)
+    gateway_fail_closed_on_outage: Optional[bool] = Field(default=None, alias="GATEWAY_FAIL_CLOSED_ON_OUTAGE")
     
     # -------------------------------------------------------------------------
     # LLM Providers
@@ -195,6 +195,20 @@ class Settings(BaseSettings):
     # API Server
     # -------------------------------------------------------------------------
     ares_api_base_url: str = Field(default="http://localhost:8000", alias="ARES_API_BASE_URL")
+
+    # -------------------------------------------------------------------------
+    # Red-Team Evidence Governance & Dynamic Attacker Policy
+    # -------------------------------------------------------------------------
+    redteam_findings_retention_days: int = Field(default=30, ge=1, le=365, alias="REDTEAM_FINDINGS_RETENTION_DAYS")
+    redteam_allow_encrypted_evidence: bool = Field(default=False, alias="REDTEAM_ALLOW_ENCRYPTED_EVIDENCE")
+    enable_dynamic_redteam: bool = Field(default=False, alias="ARES_ENABLE_DYNAMIC_REDTEAM")
+    redteam_target_allowlist: str = Field(default="", alias="ARES_REDTEAM_TARGET_ALLOWLIST")
+    redteam_dynamic_max_attempts: int = Field(default=10, ge=1, le=25, alias="ARES_REDTEAM_DYNAMIC_MAX_ATTEMPTS")
+    redteam_dynamic_rate_limit_per_hour: int = Field(
+        default=5, ge=1, le=100, alias="ARES_REDTEAM_DYNAMIC_RATE_LIMIT_PER_HOUR"
+    )
+    redteam_allowed_providers: str = Field(default="ollama", alias="ARES_REDTEAM_ALLOWED_PROVIDERS")
+    allow_optimizer_harmful_override: bool = Field(default=False, alias="ARES_ALLOW_OPTIMIZER_HARMFUL_OVERRIDE")
     
     # -------------------------------------------------------------------------
     # Properties
@@ -207,6 +221,24 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def redteam_allowed_target_hosts(self) -> set[str]:
+        """Allowed hostnames for outbound red-team target probing."""
+        return {
+            h.strip().lower()
+            for h in (self.redteam_target_allowlist or "").split(",")
+            if h and h.strip()
+        }
+
+    @property
+    def redteam_allowed_provider_set(self) -> set[str]:
+        """Allowed LLM providers for controlled dynamic red-team workflows."""
+        return {
+            p.strip().lower()
+            for p in (self.redteam_allowed_providers or "").split(",")
+            if p and p.strip()
+        }
 
     @property
     def parsed_tenant_api_keys(self) -> dict[str, str]:
@@ -279,6 +311,26 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _resolve_fail_policy_defaults(self) -> "Settings":
+        """Apply explicit fail-closed defaults outside development/test while honoring overrides."""
+        resolved_mode = self.hmac_enforce_mode
+        if resolved_mode is None or not str(resolved_mode).strip():
+            resolved_mode = "permissive" if self.is_development else "enforcing_critical"
+        else:
+            resolved_mode = str(resolved_mode).strip().lower()
+        allowed_modes = {"enforcing", "enforcing_critical", "permissive", "disabled"}
+        if resolved_mode not in allowed_modes:
+            raise ValueError(
+                f"Invalid HMAC_ENFORCE_MODE={resolved_mode!r}. Expected one of {sorted(allowed_modes)}."
+            )
+        object.__setattr__(self, "hmac_enforce_mode", resolved_mode)
+
+        if self.gateway_fail_closed_on_outage is None:
+            object.__setattr__(self, "gateway_fail_closed_on_outage", not self.is_development)
+
+        return self
+
+    @model_validator(mode="after")
     def _enforce_production_security(self) -> "Settings":
         """Fail closed: outside development, auth must be on and the dev key is forbidden."""
         if self.is_development:
@@ -293,6 +345,16 @@ class Settings(BaseSettings):
         # Dev identity must be disabled in production
         if self.allow_dev_identity:
             raise ValueError(f"ALLOW_DEV_IDENTITY=true is not allowed when ENVIRONMENT={self.environment!r}.")
+
+        # HMAC request signing cannot be disabled in production and must use a non-dev secret
+        if self.hmac_enforce_mode == "disabled":
+            raise ValueError(f"HMAC_ENFORCE_MODE='disabled' is not allowed when ENVIRONMENT={self.environment!r}.")
+
+        if self.hmac_secret == _DEV_API_KEY or len(self.hmac_secret) < _MIN_PRODUCTION_KEY_LENGTH:
+            raise ValueError(
+                "HMAC_SECRET must be set to a unique secret of at least "
+                f"{_MIN_PRODUCTION_KEY_LENGTH} characters when ENVIRONMENT={self.environment!r}."
+            )
         
         # Prompt fingerprint secret must be changed from default
         if self.prompt_fingerprint_secret == _INSECURE_FINGERPRINT_SECRET:

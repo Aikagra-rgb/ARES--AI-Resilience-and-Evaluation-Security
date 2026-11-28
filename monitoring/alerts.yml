@@ -1,0 +1,43 @@
+groups:
+  - name: ares-gateway-alerts
+    rules:
+      - alert: AresFastApiDown
+        expr: up{job="ares-fastapi"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ARES FastAPI Gateway scrape target is down"
+          description: "Prometheus has failed to scrape ares-fastapi (/metrics) for more than 1 minute."
+
+      - alert: AresGatewayHighLatencyP99
+        expr: histogram_quantile(0.99, sum(rate(ares_gateway_latency_seconds_bucket[5m])) by (le)) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ARES Gateway p99 latency exceeds 500ms"
+          description: "Runtime enforcement 99th-percentile latency has exceeded 0.5s for 5 minutes."
+
+      - alert: AresGatewayBlockSpike
+        expr: sum(rate(ares_gateway_blocks_total[5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained spike in ARES Gateway blocked prompts"
+          description: "Blocked requests exceeded 5 req/s over 2 minutes; investigate active adversarial probing."
+
+      - alert: AresLlmFailureRateHigh
+        expr: |
+          (
+            sum(rate(ares_llm_call_failures_total[5m]))
+            /
+            clamp_min(sum(rate(ares_llm_calls_total[5m])), 0.001)
+          ) > 0.25
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ARES upstream LLM call failure rate > 25%"
+          description: "Over 25% of downstream LLM calls failed in the last 5 minutes."

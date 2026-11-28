@@ -210,6 +210,10 @@ class StructuralAttackDetector:
         (re.compile(r"```\w*\n.*?(ignore|disregard|override|system).*?```", re.DOTALL | re.IGNORECASE),
          "code_fence_injection", 0.88, SeverityLevel.HIGH,
          "Malicious instruction hidden in code fence"),
+
+        (re.compile(r"```\s*(?:system|instruction|developer)\b[^\n]*\n.*?```", re.DOTALL | re.IGNORECASE),
+         "code_fence_system_block", 0.88, SeverityLevel.HIGH,
+         "Fake system or instruction role block disguised as a markdown code fence"),
         
         # XML/HTML tag injection
         (re.compile(r"<\|?(system|user|assistant|instruction|prompt|rule)s?\|?>", re.IGNORECASE),
@@ -339,6 +343,11 @@ class StructuralAttackDetector:
         (re.compile(r"(?i)\baccording\s+to\s+(the\s+)?(context|document|search|retrieved)\b"),
          "according_to_context", 0.60, SeverityLevel.MEDIUM,
          "Attribution to retrieved context"),
+
+        # Transcript / pasted context third-person directive smuggling
+        (re.compile(r"(?i)\b(?:important|urgent|critical|system\s*note|admin\s*note)\s*:\s*(?:the\s+)?(?:agent|assistant|ai|model|bot|copilot)\s+(?:must|shall|should|will|is\s+required\s+to)\b"),
+         "transcript_directive_smuggling", 0.86, SeverityLevel.HIGH,
+         "Embedded directive targeting assistant behavior inside pasted context or transcript"),
     ]
 
     # Compile all patterns into a single list for iteration

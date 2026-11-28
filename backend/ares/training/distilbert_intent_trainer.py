@@ -264,6 +264,81 @@ _CANONICAL_CLASS_SEEDS: Dict[str, List[str]] = {
     ],
 }
 
+# Short, non-overlapping operational queries across domains so the threat classifier
+# does not conflate brevity with adversarial phrasing when trained without static findings files.
+_CANONICAL_BENIGN_OPERATIONAL_SEEDS: Dict[str, List[str]] = {
+    "fintech": [
+        "What is the ACH clearing window for payroll batches?",
+        "How soon do merchant card refunds post?",
+        "Check standard treasury cutoff times.",
+        "Explain SEPA credit transfer settlement rules.",
+        "What fee applies to same-day clearing transfers?",
+        "List cutoff hours for domestic treasury desks.",
+        "How long do check clearing holds usually last?",
+        "What documents verify corporate beneficial ownership?",
+        "Summarize standard foreign exchange settlement windows.",
+        "What is the daily ATM withdrawal ceiling?",
+        "Compare FedNow instant settlement vs standard ACH.",
+        "How do escrow accounts handle accrued interest?",
+        "What triggers manual KYC address review?",
+        "When do recurring billing invoices finalize?",
+        "Check quarterly reconciliation close schedule.",
+        "Explain chargeback representment deadline rules.",
+    ],
+    "software": [
+        "Check health of auth-service",
+        "Check status of billing-worker",
+        "Show latency metrics for search-cluster",
+        "Verify uptime of notification-queue",
+        "Inspect error rate on ledger-api",
+        "Monitor CPU load on cache-proxy",
+        "Show pod readiness for ingress-controller",
+        "Check replica lag on read-replica",
+        "Summarize recent build status for web-portal",
+        "Inspect connection pool utilization on order-db",
+        "List active feature flags in staging.",
+        "What port does the metrics exporter use?",
+        "Verify disk space on artifact-runner",
+        "Check TLS renewal status on edge-router",
+        "Show queue depth for email-dispatcher",
+        "Monitor memory headroom on inference-worker",
+    ],
+    "healthcare": [
+        "What are normal resting pulse guidelines for adults?",
+        "How should mild seasonal allergies be managed at home?",
+        "When should minor sprains be evaluated for imaging?",
+        "List general hydration tips during outpatient recovery.",
+        "What follow-up timeframe applies after routine bloodwork?",
+        "How are standard immunization records requested?",
+        "Summarize clinic check-in steps for telehealth visits.",
+        "What OTC options help mild tension headaches?",
+        "When should pediatric ear discomfort be seen?",
+        "List clinic pharmacy refill request hours.",
+        "How long do routine lipid panel results take?",
+        "What ergonomic checks prevent repetitive wrist strain?",
+        "When should mild dermatology rashes be reviewed?",
+        "How do patients schedule annual preventative screenings?",
+        "List standard dietary guidance before fasting lab draws.",
+    ],
+    "general": [
+        "Summarize Monday standup notes.",
+        "List team onboarding checklist items.",
+        "Check office support desk hours.",
+        "Where is the visitor badge policy?",
+        "How do I update notification preferences?",
+        "What is the standard laptop refresh cycle?",
+        "List quarterly compliance training due dates.",
+        "Show PTO request approval workflow.",
+        "Summarize vendor security review lead times.",
+        "What formats are supported for audit exports?",
+        "Explain document retention schedule categories.",
+        "How are facility badge replacements requested?",
+        "Check holiday schedule for Q4 support.",
+        "List standard ticket escalation tiers.",
+        "How do teams request sandbox accounts?",
+    ],
+}
+
 
 def _infer_domain(org_id: str, explicit_domain: Optional[str] = None) -> str:
     if explicit_domain:
@@ -450,6 +525,16 @@ class DistilBertIntentTrainer:
             texts.append(prompt)
             labels.append("benign")
             benign_count += 1
+
+        # Include short operational benign queries so brief legitimate requests aren't misclassified by length
+        org_domain = _infer_domain(org_id)
+        for seed_dom, seed_list in _CANONICAL_BENIGN_OPERATIONAL_SEEDS.items():
+            repeat_short = 2 if seed_dom == org_domain else 1
+            for q in seed_list:
+                for _ in range(repeat_short):
+                    texts.append(q)
+                    labels.append("benign")
+                    benign_count += 1
 
         stats = {
             "org_specific_attacks": org_attack_count,

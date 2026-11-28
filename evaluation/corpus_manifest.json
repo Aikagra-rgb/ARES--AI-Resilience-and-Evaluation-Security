@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "corpus_version": "1.0.0",
+  "license": "MIT",
+  "provenance": "Operator-authored clean holdout evaluation corpus independent of training seeds and TargetAttackGenerator payloads.",
+  "split_policy": "Strict holdout isolation: zero samples shared with scaled_5000_train.jsonl, sft_optimizer_train.jsonl, redteam_findings.json, or TargetAttackGenerator.",
+  "files": {
+    "holdout_eval_corpus": {
+      "path": "evaluation/holdout_eval_corpus.jsonl",
+      "sha256": "665b7639946a92ec218d3e4bd045667c1cbe8d6e980ce9638073872fea0a9803",
+      "total_samples": 64,
+      "attack_samples": 40,
+      "benign_samples": 24,
+      "category_counts": {
+        "agent_tool_abuse": 5,
+        "benign": 24,
+        "canary_exfiltration": 5,
+        "delimiter_confusion": 5,
+        "encoding_tricks": 5,
+        "instruction_override": 5,
+        "pii_leakage": 5,
+        "rag_indirect_injection": 5,
+        "role_play_hijack": 5
+      }
+    },
+    "target_attack_generator": {
+      "path": "backend/tests/redteam/attack_generator.py",
+      "sha256": "e4d3590043b87c7dcc13435d6e5f31eb22b1fe17ae871aee6730b6d9d265319a"
+    },
+    "core_payload_library": {
+      "path": "backend/ares/redteam/payloads.py",
+      "sha256": "d08ae3a285d607cc0041080d42564a73551d9e22daa884711c7c57431c6aaa7e"
+    },
+    "intent_holdout_split": {
+      "path": "backend/ares/intent/data/scaled_5000_test.jsonl",
+      "sha256": "2bf0a4a7e9225cf4da418e785b6adb353bf1461043de24b26fa36a6bf8b54396"
+    },
+    "optimizer_holdout_tasks": {
+      "path": "evaluation/optimizer_holdout_tasks.jsonl",
+      "sha256": "2fac9d2911e159574aaf4a44e8f6e8e274a5b26bde216cfa66156caba298f395",
+      "total_samples": 40,
+      "provenance": "customer_holdout_v1",
+      "license": "MIT",
+      "domain_counts": {
+        "fintech": 8,
+        "software": 8,
+        "healthcare": 8,
+        "legal": 8,
+        "general": 8
+      },
+      "intent_counts": {
+        "coding_technical": 8,
+        "data_extraction_json": 8,
+        "analytical_qa": 9,
+        "creative_writing": 8,
+        "system_directive": 7
+      }
+    }
+  }
+}

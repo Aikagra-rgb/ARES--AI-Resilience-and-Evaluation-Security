@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Ares.Web.Services;
 using Microsoft.AspNetCore.Antiforgery;
@@ -548,29 +549,55 @@ public sealed class RbacAuthTests
     [Fact]
     public void Session_registry_supports_encrypted_distributed_cache_fallback()
     {
-        var dp = DataProtectionProvider.Create("ARES-Cache-Test");
-        var cache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
+        var tempDir = Path.Combine(Path.GetTempPath(), $"ares-cache-keys-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var dp = new ServiceCollection()
+                .AddDataProtection()
+                .PersistKeysToFileSystem(new DirectoryInfo(tempDir))
+                .SetApplicationName("ARES-Cache-Test")
+                .Services.BuildServiceProvider()
+                .GetRequiredService<IDataProtectionProvider>();
 
-        var writerRegistry = new AresSessionRegistry(dp, persistencePath: null, distributedCache: cache);
-        var session = new AresOperatorSession(
-            SessionId: "sid-cache-77",
-            Email: "admin@ares.local",
-            DisplayName: "Admin",
-            Initials: "AD",
-            Role: "Admin",
-            OrganizationId: null,
-            EffectiveApiKey: "ares-distributed-secret-xyz",
-            AuthenticatedAt: DateTimeOffset.UtcNow
-        );
-        writerRegistry.Store(session);
+            var cache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
 
-        // Fresh replica sharing distributed cache hydrates the encrypted session
-        var replicaRegistry = new AresSessionRegistry(dp, persistencePath: null, distributedCache: cache);
-        Assert.True(replicaRegistry.TryGet("sid-cache-77", out var restored));
-        Assert.Equal("ares-distributed-secret-xyz", restored!.EffectiveApiKey);
+            var writerRegistry = new AresSessionRegistry(dp, persistencePath: null, distributedCache: cache);
+            var session = new AresOperatorSession(
+                SessionId: "sid-cache-77",
+                Email: "admin@ares.local",
+                DisplayName: "Admin",
+                Initials: "AD",
+                Role: "Admin",
+                OrganizationId: null,
+                EffectiveApiKey: "ares-distributed-secret-xyz",
+                AuthenticatedAt: DateTimeOffset.UtcNow
+            );
+            writerRegistry.Store(session);
 
-        Assert.True(replicaRegistry.Remove("sid-cache-77"));
-        Assert.False(writerRegistry.TryGet("sid-cache-77", out _) && replicaRegistry.TryGet("sid-cache-77", out _));
+            // Raw distributed cache payload must never expose the plaintext API key
+            var rawPayload = cache.GetString("ares:session:sid-cache-77");
+            Assert.False(string.IsNullOrWhiteSpace(rawPayload));
+            Assert.DoesNotContain("ares-distributed-secret-xyz", rawPayload!);
+
+            // Fresh replica sharing distributed cache hydrates the encrypted session
+            var replicaRegistry = new AresSessionRegistry(dp, persistencePath: null, distributedCache: cache);
+            Assert.True(replicaRegistry.TryGet("sid-cache-77", out var restored));
+            Assert.NotNull(restored);
+            Assert.Equal("ares-distributed-secret-xyz", restored!.EffectiveApiKey);
+
+            // Revocation on one replica MUST immediately revoke across BOTH instances
+            Assert.True(replicaRegistry.Remove("sid-cache-77"));
+            Assert.False(writerRegistry.TryGet("sid-cache-77", out _));
+            Assert.False(replicaRegistry.TryGet("sid-cache-77", out _));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -724,5 +751,243 @@ public sealed class RbacAuthTests
         {
             await app.StopAsync();
         }
+    }
+
+    [Fact]
+    public async Task Two_web_app_instances_share_and_revoke_sessions_via_distributed_cache()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"ares-two-node-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var keysDir = new DirectoryInfo(Path.Combine(tempDir, "keys"));
+            var sharedCache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
+
+            async Task<(WebApplication app, string baseUrl)> StartReplicaAsync()
+            {
+                var builder = WebApplication.CreateBuilder();
+                builder.WebHost.UseUrls("http://127.0.0.1:0");
+                builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Ares:ApiBaseUrl"] = "http://localhost:8000",
+                    ["Ares:ApiKey"] = "ares-master-admin-secret-key",
+                    ["Ares:TenantApiKeys:org_acme_fintech"] = "ares_tnt_org_acme_fintech_key01",
+                });
+                builder.Services.AddDataProtection()
+                    .PersistKeysToFileSystem(keysDir)
+                    .SetApplicationName("ARES-TwoNode-Test");
+                builder.Services.AddSingleton<IDistributedCache>(sharedCache);
+                builder.Services.AddAntiforgery();
+                builder.Services.AddSingleton<AresSessionRegistry>(sp => new AresSessionRegistry(
+                    sp.GetRequiredService<IDataProtectionProvider>(),
+                    persistencePath: null,
+                    distributedCache: sp.GetRequiredService<IDistributedCache>(),
+                    sessionLifetime: TimeSpan.FromHours(8)
+                ));
+                builder.Services.AddSingleton<AresAuthService>();
+                builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+                    .AddCookie(options =>
+                    {
+                        options.Cookie.Name = "ares.console.auth";
+                        options.Cookie.HttpOnly = true;
+                        options.Cookie.SameSite = SameSiteMode.Lax;
+                        options.LoginPath = "/login";
+                        options.Events = new CookieAuthenticationEvents
+                        {
+                            OnValidatePrincipal = async ctx =>
+                            {
+                                var sid = ctx.Principal?.FindFirst(AresOperatorContext.SessionIdClaim)?.Value;
+                                var reg = ctx.HttpContext.RequestServices.GetRequiredService<AresSessionRegistry>();
+                                if (!reg.TryGet(sid, out _))
+                                {
+                                    ctx.RejectPrincipal();
+                                    await ctx.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                                }
+                            }
+                        };
+                    });
+                builder.Services.AddAuthorization();
+
+                var app = builder.Build();
+                app.UseAuthentication();
+                app.UseAuthorization();
+                app.UseAntiforgery();
+
+                app.MapGet("/csrf", (HttpContext ctx, IAntiforgery af) =>
+                {
+                    var tokens = af.GetAndStoreTokens(ctx);
+                    return Results.Ok(new { field = tokens.FormFieldName, token = tokens.RequestToken });
+                }).AllowAnonymous();
+
+                app.MapPost("/auth/login", async (HttpContext ctx, AresAuthService authSvc, IAntiforgery af) =>
+                {
+                    await af.ValidateRequestAsync(ctx);
+                    var form = await ctx.Request.ReadFormAsync();
+                    var res = await authSvc.AuthenticateAsync(new AresLoginRequest(
+                        form["email"].ToString(),
+                        form["display_name"].ToString(),
+                        form["role"].ToString(),
+                        form["org_id"].ToString(),
+                        form["api_key"].ToString()
+                    ));
+                    if (!res.Succeeded || res.Principal is null)
+                        return Results.Redirect("/login?error=denied");
+                    await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, res.Principal);
+                    return Results.Redirect("/");
+                }).AllowAnonymous();
+
+                app.MapPost("/auth/logout", async (HttpContext ctx, AresSessionRegistry reg, IAntiforgery af) =>
+                {
+                    await af.ValidateRequestAsync(ctx);
+                    var sid = ctx.User.FindFirst(AresOperatorContext.SessionIdClaim)?.Value;
+                    reg.Remove(sid);
+                    await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                    return Results.Redirect("/login");
+                }).AllowAnonymous();
+
+                app.MapGet("/protected", (HttpContext ctx) =>
+                    Results.Ok(new { org = ctx.User.FindFirst(AresOperatorContext.OrgIdClaim)?.Value })
+                ).RequireAuthorization();
+
+                await app.StartAsync();
+                var addr = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+                return (app, addr);
+            }
+
+            var (appA, urlA) = await StartReplicaAsync();
+            var (appB, urlB) = await StartReplicaAsync();
+            try
+            {
+                var cookies = new CookieContainer();
+                using var handler = new HttpClientHandler { CookieContainer = cookies, AllowAutoRedirect = false };
+                using var clientA = new HttpClient(handler) { BaseAddress = new Uri(urlA) };
+                using var clientB = new HttpClient(handler) { BaseAddress = new Uri(urlB) };
+
+                // Authenticate on Node A
+                var csrfA = System.Text.Json.JsonDocument.Parse(await clientA.GetStringAsync("/csrf"));
+                var loginResp = await clientA.PostAsync("/auth/login", new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    [csrfA.RootElement.GetProperty("field").GetString()!] = csrfA.RootElement.GetProperty("token").GetString()!,
+                    ["email"] = "analyst@acme.test",
+                    ["role"] = "Tenant",
+                    ["org_id"] = "org_acme_fintech",
+                    ["api_key"] = "ares_tnt_org_acme_fintech_key01",
+                }));
+                Assert.Equal(HttpStatusCode.Redirect, loginResp.StatusCode);
+
+                // Share cookie seamlessly with Node B
+                var nodeBCookie = new CookieContainer();
+                foreach (Cookie c in cookies.GetCookies(new Uri(urlA)))
+                {
+                    nodeBCookie.Add(new Uri(urlB), new Cookie(c.Name, c.Value));
+                }
+                using var handlerB = new HttpClientHandler { CookieContainer = nodeBCookie, AllowAutoRedirect = false };
+                using var httpB = new HttpClient(handlerB) { BaseAddress = new Uri(urlB) };
+
+                var authedOnB = await httpB.GetAsync("/protected");
+                Assert.Equal(HttpStatusCode.OK, authedOnB.StatusCode);
+                Assert.Contains("org_acme_fintech", await authedOnB.Content.ReadAsStringAsync());
+
+                // Revoke on Node B -> Node A MUST immediately reject the original cookie
+                var csrfB = System.Text.Json.JsonDocument.Parse(await httpB.GetStringAsync("/csrf"));
+                var logoutOnB = await httpB.PostAsync("/auth/logout", new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    [csrfB.RootElement.GetProperty("field").GetString()!] = csrfB.RootElement.GetProperty("token").GetString()!,
+                }));
+                Assert.Equal(HttpStatusCode.Redirect, logoutOnB.StatusCode);
+
+                var nodeAAfterRevoke = await clientA.GetAsync("/protected");
+                Assert.Equal(HttpStatusCode.Redirect, nodeAAfterRevoke.StatusCode);
+                Assert.Contains("/login", nodeAAfterRevoke.Headers.Location?.ToString() ?? "");
+            }
+            finally
+            {
+                await appA.StopAsync();
+                await appB.StopAsync();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Redis_configuration_normalizes_urls_and_enforces_production_requirement()
+    {
+        Assert.Equal("redis:6379", AresRedisConfiguration.NormalizeConnectionString("redis://redis:6379"));
+        Assert.Equal(
+            "redis.internal:6380,user=ares,password=s3cr3t,ssl=true,defaultDatabase=2",
+            AresRedisConfiguration.NormalizeConnectionString("rediss://ares:s3cr3t@redis.internal:6380/2")
+        );
+        Assert.Equal("127.0.0.1:6379,password=abc", AresRedisConfiguration.NormalizeConnectionString("127.0.0.1:6379,password=abc"));
+
+        // Production without Redis and without opt-in single-node flag MUST throw
+        Assert.Throws<InvalidOperationException>(() =>
+            AresRedisConfiguration.ValidateSessionStorageConfiguration(isDevelopment: false, redisConnection: null, allowSingleNodeSessions: false));
+
+        // Production WITH Redis or explicit single-node opt-in succeeds
+        AresRedisConfiguration.ValidateSessionStorageConfiguration(isDevelopment: false, redisConnection: "redis:6379", allowSingleNodeSessions: false);
+        AresRedisConfiguration.ValidateSessionStorageConfiguration(isDevelopment: false, redisConnection: null, allowSingleNodeSessions: true);
+        AresRedisConfiguration.ValidateSessionStorageConfiguration(isDevelopment: true, redisConnection: null, allowSingleNodeSessions: false);
+    }
+
+    [Fact]
+    public async Task FastApiAresApiClient_signs_relative_urls_with_valid_hmac_headers()
+    {
+        var registry = new AresSessionRegistry();
+        registry.Store(new AresOperatorSession(
+            SessionId: "sid-hmac-1",
+            Email: "secops@ares.test",
+            DisplayName: "SecOps",
+            Initials: "SO",
+            Role: "Admin",
+            OrganizationId: null,
+            EffectiveApiKey: "ares-test-admin-key-24-chars",
+            AuthenticatedAt: DateTimeOffset.UtcNow
+        ));
+        var opCtx = new AresOperatorContext(registry);
+        registry.TryGet("sid-hmac-1", out var activeSession);
+        opCtx.SetSession(activeSession);
+
+        string capturedBody = "";
+        var handler = new StubHttpMessageHandler(req =>
+        {
+            capturedBody = req.Content is null
+                ? ""
+                : req.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"action\":\"ALLOW\",\"risk_score\":0,\"severity\":\"SAFE\",\"matched_technique\":\"clean\",\"explanation\":\"Clean\",\"latency_ms\":1.2,\"correlation_id\":\"c1\"}",
+                    Encoding.UTF8,
+                    "application/json"
+                )
+            };
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:8000/") };
+        const string hmacSecret = "super-secret-hmac-signing-key-24chars";
+        var client = new FastApiAresApiClient(http, new MockAresApiClient(), signingKey: hmacSecret, operatorContext: opCtx);
+
+        await client.EnforcePromptAsync(
+            new Ares.Web.Models.GatewayEnforceRequest("Summarize Q3 cashflow", ApplicationName: "AcmeApp"),
+            CancellationToken.None
+        );
+
+        var sent = handler.LastRequest!;
+        var sig = sent.Headers.GetValues("X-Ares-Signature").Single();
+        var ts = sent.Headers.GetValues("X-Ares-Timestamp").Single();
+        var nonce = sent.Headers.GetValues("X-Ares-Nonce").Single();
+        var body = capturedBody;
+
+        var bodySha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+        var canonical = $"POST\n/api/gateway/enforce\n\n{bodySha}\n{ts}\n{nonce}";
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(hmacSecret));
+        var expectedSig = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+
+        Assert.Equal(expectedSig, sig);
     }
 }

@@ -1,14 +1,22 @@
+# ==============================================================================
+# DEVELOPMENT-ONLY FULL STACK — DO NOT USE IN PRODUCTION.
+# Use docker-compose.yml for hardened production deployments.
+# Requires GRAFANA_ADMIN_PASSWORD in your environment before running `up`.
+# All published host ports are bound strictly to loopback (127.0.0.1).
+# ==============================================================================
+
 services:
   fastapi:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      - DATABASE_URL=postgresql+psycopg://ares:password@postgres:5432/ares
+      - DATABASE_URL=postgresql+psycopg://ares:${POSTGRES_PASSWORD:-ares_dev_password}@postgres:5432/ares
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379
       - ARES_LORA_SERVER_URL=http://lora-inference:11435/v1
       - ARES_API_KEY=${ARES_API_KEY:-ares-dev-secret-key-42}
+      - HMAC_SECRET=${HMAC_SECRET:-ares-dev-secret-key-42}
       - ARES_TENANT_API_KEYS=${ARES_TENANT_API_KEYS:-}
     depends_on:
       - postgres
@@ -18,12 +26,14 @@ services:
   blazor-web:
     build: ./src/Ares.Web
     ports:
-      - "5149:8080"
+      - "127.0.0.1:5149:8080"
     environment:
-      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_ENVIRONMENT=Development
       - Ares__ApiBaseUrl=http://fastapi:8000
       - Ares__ApiKey=${ARES_API_KEY:-ares-dev-secret-key-42}
+      - Ares__HmacSecret=${HMAC_SECRET:-ares-dev-secret-key-42}
       - Ares__TenantApiKeys=${ARES_TENANT_API_KEYS:-}
+      - Ares__RedisConnection=redis:6379
       - DataProtection__KeysPath=/var/lib/ares/keys
       - Ares__PersistSessions=true
       - Ares__RequireHttpsCookie=${ARES_REQUIRE_HTTPS_COOKIE:-false}
@@ -32,6 +42,7 @@ services:
       - ares_web_keys:/var/lib/ares/keys
     depends_on:
       - fastapi
+      - redis
 
   lora-inference:
     build:
@@ -39,7 +50,7 @@ services:
       dockerfile: Dockerfile
     command: python -m ares.training.serve_lora --port 11435 --host 0.0.0.0
     ports:
-      - "11435:11435"
+      - "127.0.0.1:11435:11435"
     deploy:
       resources:
         reservations:
@@ -53,9 +64,9 @@ services:
       context: ./backend
       dockerfile: ../Dockerfile.target
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
-      - DATABASE_URL=postgresql+psycopg://ares:password@postgres:5432/ares
+      - DATABASE_URL=postgresql+psycopg://ares:${POSTGRES_PASSWORD:-ares_dev_password}@postgres:5432/ares
       - ARES_GATEWAY_URL=http://fastapi:8000
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - ARES_TARGET_MOCK_LLM=${ARES_TARGET_MOCK_LLM:-0}
@@ -66,25 +77,25 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ares_dev_password}
       POSTGRES_DB: ares
       POSTGRES_USER: ares
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ares_postgres_data:/var/lib/postgresql/data
 
   qdrant:
     image: qdrant/qdrant:latest
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - ares_qdrant_data:/qdrant/storage
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   prometheus:
     image: prom/prometheus:latest
@@ -98,18 +109,19 @@ services:
         chmod 600 /tmp/ares_metrics_token
         exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=15d
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
     depends_on:
       - fastapi
 
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set-GRAFANA_ADMIN_PASSWORD-in-env}
     volumes:
       - ares_grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

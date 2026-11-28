@@ -91,17 +91,36 @@ class ExportTrainingRequest(BaseModel):
 @router.post("/submit", response_model=Dict[str, Any])
 async def submit_attack(
     req: SubmitAttackRequest,
+    auth_ctx: Dict[str, Any] = Depends(verify_api_key),
     queue: AttackModerationQueue = Depends(get_moderation_queue),
 ) -> Dict[str, Any]:
     """Submit an adversarial attack sample for moderation and poisoning inspection."""
+    if req.bypass_moderation and not auth_ctx.get("is_admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="bypass_moderation is restricted to administrator sessions.",
+        )
+
+    meta = dict(req.metadata or {})
+    raw_org = meta.get("org_id") or meta.get("organization_id")
+    if raw_org is not None and str(raw_org).strip() not in ("", "default"):
+        try:
+            validated = validate_org_id(str(raw_org).strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        enforce_tenant_access(auth_ctx, validated)
+    elif auth_ctx.get("organization_id") and not auth_ctx.get("is_admin"):
+        meta["org_id"] = auth_ctx["organization_id"]
+
     try:
         item = await queue.submit(
             attack_text=req.attack_text,
             category=req.category,
             severity=req.severity,
             source=req.source,
+            submitted_by=str(auth_ctx.get("user_email") or "operator"),
             domain=req.domain,
-            metadata=req.metadata,
+            metadata=meta,
             bypass_moderation=req.bypass_moderation,
         )
         return item.to_dict()
@@ -232,6 +251,11 @@ async def export_training_feedback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     scoped_org = enforce_tenant_access(auth_ctx, validated_org)
+    if req.retrain and not auth_ctx.get("is_admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Model retraining requires administrator authorization and reviewed moderation approval.",
+        )
     target_retrain_orgs = validated_retrain_orgs
     if target_retrain_orgs:
         for oid in target_retrain_orgs:

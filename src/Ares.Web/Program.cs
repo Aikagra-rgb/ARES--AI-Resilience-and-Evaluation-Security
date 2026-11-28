@@ -6,19 +6,49 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Caching.Distributed;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-// Data Protection - use persistent keys in production (or when session persistence is enabled), ephemeral only in development
+// Session & Data Protection configuration:
+// - Outside Development, require Redis-backed multi-instance sessions unless AllowSingleNodeSessions=true.
+// - When Redis is configured, share both DataProtection keys and encrypted operator sessions via Redis.
 var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"]
     ?? Path.Combine(builder.Environment.ContentRootPath, "keys");
+var rawRedisConnection = builder.Configuration["Ares:RedisConnection"]
+    ?? builder.Configuration["REDIS_URL"]
+    ?? builder.Configuration["ConnectionStrings:Redis"];
+var allowSingleNodeSessions = builder.Configuration.GetValue<bool>("Ares:AllowSingleNodeSessions", defaultValue: false);
+AresRedisConfiguration.ValidateSessionStorageConfiguration(
+    builder.Environment.IsDevelopment(),
+    rawRedisConnection,
+    allowSingleNodeSessions
+);
+var normalizedRedisConnection = AresRedisConfiguration.NormalizeConnectionString(rawRedisConnection ?? string.Empty);
+var useRedisSessions = !string.IsNullOrWhiteSpace(normalizedRedisConnection);
+
 var persistSessions = builder.Configuration.GetValue<bool?>("Ares:PersistSessions")
     ?? !builder.Environment.IsDevelopment();
 
-if (builder.Environment.IsDevelopment() && !persistSessions)
+if (useRedisSessions)
+{
+    var redisOptions = ConfigurationOptions.Parse(normalizedRedisConnection);
+    redisOptions.AbortOnConnectFail = false;
+    var redisMux = ConnectionMultiplexer.Connect(redisOptions);
+    builder.Services.AddSingleton<IConnectionMultiplexer>(redisMux);
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisMux);
+        options.InstanceName = "ares:web:";
+    });
+    builder.Services.AddDataProtection()
+        .SetApplicationName("ARES-Security-System")
+        .PersistKeysToStackExchangeRedis(redisMux, "ares:dataprotection:keys");
+}
+else if (builder.Environment.IsDevelopment() && !persistSessions)
 {
     builder.Services.AddSingleton<IDataProtectionProvider, EphemeralDataProtectionProvider>();
 }
@@ -86,7 +116,7 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("AdminOnly", policy => policy.RequireRole("Admin"));
     options.AddPolicy("TenantOrAdmin", policy => policy.RequireAuthenticatedUser());
 });
-var sessionPersistencePath = persistSessions
+var sessionPersistencePath = (!useRedisSessions && persistSessions)
     ? Path.Combine(dataProtectionKeysPath, "operator-sessions.protected.json")
     : null;
 
@@ -140,7 +170,9 @@ else
         var http = factory.CreateClient("AresBackend");
         var fallback = provider.GetRequiredService<MockAresApiClient>();
         var opCtx = provider.GetRequiredService<AresOperatorContext>();
-        return new FastApiAresApiClient(http, fallback, operatorContext: opCtx);
+        var signingKey = builder.Configuration["Ares:HmacSecret"]
+            ?? builder.Configuration["HMAC_SECRET"];
+        return new FastApiAresApiClient(http, fallback, signingKey: signingKey, operatorContext: opCtx);
     });
     builder.Services.AddScoped<IAresApiClient>(provider => provider.GetRequiredService<FastApiAresApiClient>());
 

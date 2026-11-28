@@ -163,8 +163,8 @@
                     <div>
                         <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:0.35rem;">Client Model / Inference Engine</label>
                         <select class="category-select" style="width:100%;" @bind="_inferenceMode">
-                            <option value="auto">Auto — Client Adapter + LLM Synthesis</option>
-                            <option value="client_adapter">Client Compression Adapter Only (Fast Stage-1)</option>
+                            <option value="auto">Auto — Client Rules / LoRA / Base-Model Fallback</option>
+                            <option value="rules_adapter">Rules Adapter Only (Lexical Stage-1, No LoRA)</option>
                             <option value="lora">Native LoRA Adapter Server (:11435)</option>
                             <option value="ollama">Local Ollama (ares-optimizer:8b / llama3.1:8b)</option>
                             <option value="cloud">Cloud LLM Failover (Groq / Gemini / OpenAI)</option>
@@ -340,7 +340,7 @@
                         </div>
                         <div style="display:flex;align-items:center;gap:0.5rem;">
                             <span style="font-size:0.75rem;background:@(_optResult.VerificationPassed ? "rgba(52,211,153,0.15)" : "rgba(251,191,36,0.15)");color:@(_optResult.VerificationPassed ? "#34d399" : "#fbbf24");padding:3px 8px;border-radius:4px;font-weight:600;">
-                                @(_optResult.VerificationPassed ? "✓ Structural Guard Verified" : "⚠ Verification Fallback")
+                                @(FormatVerificationBadge(_optResult))
                             </span>
                             <span style="font-size:0.8rem;background:rgba(56,189,248,0.15);color:#38bdf8;padding:3px 8px;border-radius:4px;font-weight:600;">
                                 @_optResult.DirectiveName
@@ -383,8 +383,9 @@
                     <div style="margin-bottom:0.85rem;padding:0.55rem 0.75rem;background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.22);border-radius:6px;display:flex;flex-wrap:wrap;gap:0.9rem;font-size:0.78rem;align-items:center;">
                         <span><strong>Client Org:</strong> <span class="subtle-code">@_optResult.OrgId</span></span>
                         <span><strong>Classifier Used:</strong> <span class="subtle-code">@_optResult.ClassifierUsed</span></span>
-                        <span><strong>Compression Engine:</strong> <span class="subtle-code">@_optResult.CompressionEngine</span></span>
-                        <span><strong>Client Adapter:</strong> <span style="color:@(_optResult.ClientAdapterApplied ? "#34d399" : "#94a3b8");font-weight:600;">@(_optResult.ClientAdapterApplied ? "Active" : "Global Default")</span></span>
+                        <span><strong>Engine Path:</strong> <span class="subtle-code">@FormatEngineKind(_optResult.EngineKind)</span> (<span class="subtle-code">@_optResult.CompressionEngine</span>)</span>
+                        <span><strong>Rules Adapter:</strong> <span style="color:@(_optResult.ClientAdapterApplied ? "#34d399" : "#94a3b8");font-weight:600;">@(_optResult.ClientAdapterApplied ? "Active" : "Global")</span></span>
+                        <span><strong>Client LoRA:</strong> <span style="color:@(_optResult.ClientLoraApplied ? "#34d399" : "#94a3b8");font-weight:600;">@(_optResult.ClientLoraApplied ? "Applied" : "None")</span></span>
                     </div>
 
                     @if (_optResult.MitigatedThreats is { Count: > 0 })
@@ -877,21 +878,41 @@ else
 
     private string GetActiveEngineTitle() => _inferenceMode switch
     {
-        "client_adapter" => SelectedClient is not null ? $"Client Adapter ({SelectedClient.OrgId})" : "Stage-1 Lexical Adapter",
+        "rules_adapter" or "client_adapter" => SelectedClient is not null ? $"Rules Adapter ({SelectedClient.OrgId})" : "Rules Adapter (Lexical Stage-1)",
         "lora" => "Native LoRA Adapter (:11435)",
         "ollama" => "Ollama Local LLM Engine",
         "cloud" => "Cloud LLM Provider Failover",
-        _ => SelectedClient is not null ? "Client Adapter + LLM Hybrid" : "LoRA / Llama 3.1 Auto"
+        _ => SelectedClient is not null ? "Client Rules / LoRA / Fallback Auto" : "LoRA / Base-Model Auto"
     };
 
     private string GetActiveEngineSubtitle() => _inferenceMode switch
     {
-        "client_adapter" => "Ultra-fast deterministic rule pruning (<5ms)",
+        "rules_adapter" or "client_adapter" => "Deterministic lexical pruning & protected terms (No LoRA weights)",
         "lora" => "PEFT GPU adapter with Stage-1 safety fallback",
-        "ollama" => "ares-optimizer:8b -> llama3.1:8b failover",
-        "cloud" => "Groq / Gemini / OpenAI synthesis",
-        _ => SelectedClient is not null ? "Per-org classifier, thresholds & adapter active" : "Native LoRA -> Ollama -> Stage-1 fallback"
+        "ollama" => "ares-optimizer:8b -> llama3.1:8b base-model fallback",
+        "cloud" => "Groq / Gemini / OpenAI base-model fallback",
+        _ => SelectedClient is not null ? "Per-org classifier, thresholds & rules active" : "Client/Global LoRA -> Base-Model -> Rules fallback"
     };
+
+    private static string FormatEngineKind(string? kind) => (kind ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "rules_adapter" => "Rules Adapter (Lexical)",
+        "client_lora_adapter" => "Client LoRA Adapter",
+        "global_lora" => "Global LoRA",
+        "base_model_fallback" => "Base-Model Fallback",
+        "blocked" => "Blocked",
+        var other => other
+    };
+
+    private static string FormatVerificationBadge(OptimizePromptResponse res)
+    {
+        if (string.Equals(res.VerificationStatus, "verification_unavailable", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(res.Status, "verification_unavailable", StringComparison.OrdinalIgnoreCase))
+        {
+            return "⚠ Verification Unavailable (Fail-Closed)";
+        }
+        return res.VerificationPassed ? "✓ Structural Guard Verified" : "⚠ Verification Drift Warning";
+    }
 
     private sealed record DiffToken(string Word, string Kind);
 
@@ -949,6 +970,7 @@ else
         "SUCCESS" or "OPTIMIZED" => "OPTIMIZED",
         "BLOCKED_SECURITY" or "SECURITY_BLOCKED" => "SECURITY_BLOCKED",
         "DRIFT_WARNING" => "DRIFT_WARNING",
+        "VERIFICATION_UNAVAILABLE" => "VERIFICATION_UNAVAILABLE",
         "FALLBACK" => "FALLBACK",
         "UNCHANGED_ALREADY_OPTIMAL" => "UNCHANGED_ALREADY_OPTIMAL",
         var other => other
@@ -964,7 +986,7 @@ else
     {
         "OPTIMIZED" or "SUCCESS" => "#34d399",
         "SECURITY_BLOCKED" or "BLOCKED_SECURITY" => "#f87171",
-        "DRIFT_WARNING" or "FALLBACK" => "#fbbf24",
+        "DRIFT_WARNING" or "VERIFICATION_UNAVAILABLE" or "FALLBACK" => "#fbbf24",
         "UNCHANGED_ALREADY_OPTIMAL" => "#38bdf8",
         _ => "#94a3b8"
     };
@@ -1039,7 +1061,7 @@ else
                 TargetFidelity: _useCalibratedFidelity ? null : _targetFidelity,
                 AllowHarmful: _allowHarmful,
                 OrgId: string.IsNullOrWhiteSpace(_selectedOrgId) ? null : _selectedOrgId,
-                PreferRuleCompression: _inferenceMode == "client_adapter",
+                PreferRuleCompression: _inferenceMode is "rules_adapter" or "client_adapter",
                 InferenceMode: _inferenceMode
             );
 

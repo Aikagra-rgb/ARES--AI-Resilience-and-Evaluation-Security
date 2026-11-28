@@ -149,18 +149,43 @@ class HmacVerifier:
 class HmacVerificationMiddleware(BaseHTTPMiddleware):
     """
     FastAPI / Starlette middleware enforcing HMAC request signatures.
+
+    Modes:
+    - ``enforcing``: Every non-exempt endpoint requires valid HMAC headers.
+    - ``enforcing_critical``: Gateway enforcement, moderation, client management,
+      and red-team endpoints require valid HMAC headers; other API-key-protected
+      endpoints verify HMAC when signature headers are supplied.
+    - ``permissive``: Verifies HMAC whenever signature headers are supplied
+      (development/test default).
+    - ``disabled``: Bypasses HMAC verification (forbidden in production).
     """
+
+    ALLOWED_MODES = frozenset({"enforcing", "enforcing_critical", "permissive", "disabled"})
+    DEFAULT_CRITICAL_PREFIXES = (
+        "/api/gateway/",
+        "/api/v1/clients",
+        "/api/clients",
+        "/api/v1/redteam",
+        "/api/redteam",
+        "/api/moderation",
+    )
 
     def __init__(
         self,
         app,
         verifier: HmacVerifier,
-        enforce_mode: str = "permissive",  # 'enforcing', 'permissive', 'disabled'
+        enforce_mode: str = "permissive",
         exempt_paths: Optional[Set[str]] = None,
+        critical_prefixes: Optional[Tuple[str, ...]] = None,
     ):
         super().__init__(app)
+        mode_norm = (enforce_mode or "permissive").strip().lower()
+        if mode_norm not in self.ALLOWED_MODES:
+            raise ValueError(
+                f"Invalid HMAC enforce_mode {enforce_mode!r}. Expected one of {sorted(self.ALLOWED_MODES)}."
+            )
         self.verifier = verifier
-        self.enforce_mode = enforce_mode
+        self.enforce_mode = mode_norm
         self.exempt_paths = exempt_paths or {
             "/healthz",
             "/health",
@@ -169,6 +194,10 @@ class HmacVerificationMiddleware(BaseHTTPMiddleware):
             "/redoc",
             "/openapi.json",
         }
+        self.critical_prefixes = critical_prefixes or self.DEFAULT_CRITICAL_PREFIXES
+
+    def _is_critical_path(self, path: str) -> bool:
+        return any(path.startswith(prefix) for prefix in self.critical_prefixes)
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if self.enforce_mode == "disabled":
@@ -184,11 +213,16 @@ class HmacVerificationMiddleware(BaseHTTPMiddleware):
         nonce = request.headers.get("X-Ares-Nonce")
         key_id = request.headers.get("X-Ares-Key-Id", "ares-web")
 
+        has_any_sig = any((signature, timestamp, nonce))
         has_sig_headers = bool(signature and timestamp and nonce)
 
-        # In permissive mode, only verify if headers are present
         if not has_sig_headers:
-            if self.enforce_mode == "enforcing":
+            requires_hmac = (
+                self.enforce_mode == "enforcing"
+                or (self.enforce_mode == "enforcing_critical" and self._is_critical_path(request.url.path))
+                or has_any_sig
+            )
+            if requires_hmac:
                 return JSONResponse(
                     status_code=401,
                     content={

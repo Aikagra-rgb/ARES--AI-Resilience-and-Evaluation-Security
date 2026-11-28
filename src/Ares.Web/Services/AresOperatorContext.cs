@@ -92,7 +92,7 @@ public sealed class AresSessionRegistry : IAresSessionStore
         }
 
         _protector = dataProtectionProvider?.CreateProtector(ProtectorPurpose);
-        if (_persistencePath is not null)
+        if (_distributedCache is null && _persistencePath is not null)
         {
             LoadFromDisk();
         }
@@ -100,8 +100,13 @@ public sealed class AresSessionRegistry : IAresSessionStore
 
     public void Store(AresOperatorSession session)
     {
+        if (_distributedCache is not null && _protector is not null)
+        {
+            PersistSessionInCache(session);
+            _sessions.TryRemove(session.SessionId, out _);
+            return;
+        }
         _sessions[session.SessionId] = session;
-        PersistSessionInCache(session);
         SaveToDisk();
     }
 
@@ -109,19 +114,6 @@ public sealed class AresSessionRegistry : IAresSessionStore
     {
         if (string.IsNullOrWhiteSpace(sessionId))
         {
-            session = null;
-            return false;
-        }
-
-        if (_sessions.TryGetValue(sessionId, out var existing))
-        {
-            if (!IsExpired(existing))
-            {
-                session = existing;
-                return true;
-            }
-
-            Remove(sessionId);
             session = null;
             return false;
         }
@@ -137,7 +129,6 @@ public sealed class AresSessionRegistry : IAresSessionStore
                     var restored = JsonSerializer.Deserialize<AresOperatorSession>(json);
                     if (restored is not null && !IsExpired(restored))
                     {
-                        _sessions[sessionId] = restored;
                         session = restored;
                         return true;
                     }
@@ -146,8 +137,22 @@ public sealed class AresSessionRegistry : IAresSessionStore
             }
             catch
             {
-                // Fail closed if cache entry is corrupt or keys changed.
+                // Fail closed if distributed cache entry is corrupt, unreadable, or keys rotated.
             }
+
+            session = null;
+            return false;
+        }
+
+        if (_sessions.TryGetValue(sessionId, out var existing))
+        {
+            if (!IsExpired(existing))
+            {
+                session = existing;
+                return true;
+            }
+
+            Remove(sessionId);
         }
 
         session = null;
@@ -157,20 +162,23 @@ public sealed class AresSessionRegistry : IAresSessionStore
     public bool Remove(string? sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
-        var removed = _sessions.TryRemove(sessionId, out _);
+        var localRemoved = _sessions.TryRemove(sessionId, out _);
         if (_distributedCache is not null)
         {
             try
             {
-                _distributedCache.Remove(GetCacheKey(sessionId));
+                var key = GetCacheKey(sessionId);
+                var existed = !string.IsNullOrWhiteSpace(_distributedCache.GetString(key));
+                _distributedCache.Remove(key);
+                return existed || localRemoved;
             }
             catch
             {
-                // Best-effort distributed cache eviction.
+                return localRemoved;
             }
         }
         SaveToDisk();
-        return removed;
+        return localRemoved;
     }
 
     public AresOperatorSession? UpdateApiKey(string? sessionId, string newApiKey)
@@ -179,9 +187,7 @@ public sealed class AresSessionRegistry : IAresSessionStore
         if (TryGet(sessionId, out var existing) && existing is not null)
         {
             var updated = existing with { EffectiveApiKey = newApiKey.Trim() };
-            _sessions[sessionId] = updated;
-            PersistSessionInCache(updated);
-            SaveToDisk();
+            Store(updated);
             return updated;
         }
         return null;

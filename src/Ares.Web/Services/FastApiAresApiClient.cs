@@ -50,8 +50,13 @@ public sealed class FastApiAresApiClient : IAresApiClient
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
         var nonce = Guid.NewGuid().ToString("N");
         var method = request.Method.Method;
-        var path = request.RequestUri?.AbsolutePath ?? string.Empty;
-        var query = request.RequestUri?.Query.TrimStart('?') ?? string.Empty;
+        Uri? resolvedUri = request.RequestUri;
+        if (resolvedUri is not null && !resolvedUri.IsAbsoluteUri && _http.BaseAddress is not null)
+        {
+            resolvedUri = new Uri(_http.BaseAddress, resolvedUri);
+        }
+        var path = resolvedUri?.AbsolutePath ?? string.Empty;
+        var query = resolvedUri?.Query.TrimStart('?') ?? string.Empty;
         
         // Create canonical request
         var canonicalParts = new List<string>
@@ -98,11 +103,11 @@ public sealed class FastApiAresApiClient : IAresApiClient
         }
         
         var (timestamp, nonce, signature, keyId) = ComputeSignature(request, bodyJson);
-        
-        request.Headers.Add("X-Ares-Timestamp", timestamp);
-        request.Headers.Add("X-Ares-Nonce", nonce);
+
         if (!string.IsNullOrEmpty(signature))
         {
+            request.Headers.Add("X-Ares-Timestamp", timestamp);
+            request.Headers.Add("X-Ares-Nonce", nonce);
             request.Headers.Add("X-Ares-Signature", signature);
             request.Headers.Add("X-Ares-Key-Id", keyId);
         }
@@ -434,13 +439,7 @@ public sealed class FastApiAresApiClient : IAresApiClient
         {
             try
             {
-                using var message = new HttpRequestMessage(method, route);
-                if (body is not null)
-                    message.Content = JsonContent.Create(body, body.GetType(), options: JsonOptions);
-                if (_operatorContext is not null)
-                {
-                    await _operatorContext.ApplyHeadersAsync(message);
-                }
+                using var message = await CreateSignedRequestAsync(method, route, body);
 
                 using var response = await _http.SendAsync(message, cancellationToken);
                 if (response.IsSuccessStatusCode)

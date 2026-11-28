@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ from ares.api.dependencies import enforce_tenant_access, verify_api_key
 from ares.config import settings
 from ares.intent.taxonomy import INTENT_DIRECTIVES, PromptIntent
 from ares.optimizer.pipeline import (
+    CompressionEngineKind,
     OptimizationStatus,
     OptimizedPromptResult,
     UserPromptOptimizer,
@@ -42,10 +43,10 @@ class OptimizePromptRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000, description="The raw prompt text to optimize")
     domain: Optional[str] = Field(default=None, description="Optional domain hint (e.g. software, fintech, healthcare)")
     target_fidelity: Optional[float] = Field(default=None, ge=0.5, le=1.0, description="Minimum acceptable semantic similarity threshold (defaults to class/client-aware threshold)")
-    allow_harmful: bool = Field(default=False, description="Whether to bypass security gate (for red-teaming research)")
+    allow_harmful: bool = Field(default=False, description="Whether to bypass security gate (admin + approved research policy only)")
     org_id: Optional[str] = Field(default=None, description="Optional organization/client ID for per-client classifier and fidelity thresholds")
     prefer_rule_compression: bool = Field(default=False, description="Prefer ultra-fast Stage-1 lexical compression when target reduction is met")
-    inference_mode: str = Field(default="auto", description="Inference mode: auto, client_adapter, lora, ollama, cloud")
+    inference_mode: str = Field(default="auto", description="Inference mode: auto, rules_adapter, client_adapter, lora, ollama, cloud")
     model_name: Optional[str] = Field(default=None, description="Optional explicit model identifier override")
 
 
@@ -64,6 +65,7 @@ class OptimizePromptResponse(BaseModel):
     semantic_fidelity: float
     target_fidelity: float = 0.85
     verification_passed: bool = True
+    verification_status: str = "verified"
     mitigated_threats: List[str] = Field(default_factory=list)
     security_verdict: str
     security_risk_score: float
@@ -72,10 +74,38 @@ class OptimizePromptResponse(BaseModel):
     reasoning: Optional[str]
     org_id: str = "default"
     classifier_used: str = "global-sklearn"
-    compression_engine: str = "auto"
+    compression_engine: str = "rules_adapter:default"
+    engine_kind: str = CompressionEngineKind.RULES_ADAPTER.value
     client_adapter_applied: bool = False
+    client_lora_applied: bool = False
     protected_terms_preserved: bool = True
     missing_protected_terms: List[str] = Field(default_factory=list)
+
+
+def _enforce_allow_harmful_policy(
+    req: OptimizePromptRequest,
+    auth_ctx: Dict[str, Any],
+    research_policy_header: Optional[str],
+) -> None:
+    """Gate `allow_harmful` behind admin role + server override policy + explicit header."""
+    if not req.allow_harmful:
+        return
+    if not auth_ctx.get("is_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="allow_harmful is restricted to authorized admin/research sessions and cannot be enabled by tenant keys.",
+        )
+    if (
+        not settings.allow_optimizer_harmful_override
+        or (research_policy_header or "").strip().lower() != "approved"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "allow_harmful requires ARES_ALLOW_OPTIMIZER_HARMFUL_OVERRIDE=true "
+                "and header 'X-Ares-Research-Policy: approved'."
+            ),
+        )
 
 
 class IntentInfoResponse(BaseModel):
@@ -94,12 +124,14 @@ async def optimize_prompt_endpoint(
     req: OptimizePromptRequest,
     auth_ctx: Dict[str, Any] = Depends(verify_api_key),
     optimizer: UserPromptOptimizer = Depends(get_prompt_optimizer),
+    x_ares_research_policy: Optional[str] = Header(default=None, alias="X-Ares-Research-Policy"),
 ) -> OptimizePromptResponse:
     """
     Analyze and optimize an unoptimized user prompt.
     Applies security gate, intent categorization, few-shot RAG retrieval,
-    Llama 3.1 restructuring, and semantic fidelity checks.
+    LLM/rules compression, and fail-closed semantic fidelity verification.
     """
+    _enforce_allow_harmful_policy(req, auth_ctx, x_ares_research_policy)
     scoped_org_id = enforce_tenant_access(auth_ctx, req.org_id)
     try:
         res = await optimizer.optimize_prompt(
@@ -128,6 +160,7 @@ async def optimize_prompt_endpoint(
             semantic_fidelity=res.semantic_fidelity,
             target_fidelity=res.target_fidelity,
             verification_passed=res.verification_passed,
+            verification_status=res.verification_status,
             mitigated_threats=res.mitigated_threats,
             security_verdict=res.security_verdict,
             security_risk_score=res.security_risk_score,
@@ -137,7 +170,9 @@ async def optimize_prompt_endpoint(
             org_id=res.org_id,
             classifier_used=res.classifier_used,
             compression_engine=res.compression_engine,
+            engine_kind=res.engine_kind,
             client_adapter_applied=res.client_adapter_applied,
+            client_lora_applied=res.client_lora_applied,
             protected_terms_preserved=res.protected_terms_preserved,
             missing_protected_terms=res.missing_protected_terms,
         )
@@ -155,10 +190,12 @@ async def optimize_prompt_stream_endpoint(
     req: OptimizePromptRequest,
     auth_ctx: Dict[str, Any] = Depends(verify_api_key),
     optimizer: UserPromptOptimizer = Depends(get_prompt_optimizer),
+    x_ares_research_policy: Optional[str] = Header(default=None, alias="X-Ares-Research-Policy"),
 ) -> StreamingResponse:
     """
     Stream real-time Server-Sent Events (SSE) for each stage of the prompt optimization pipeline.
     """
+    _enforce_allow_harmful_policy(req, auth_ctx, x_ares_research_policy)
     scoped_org_id = enforce_tenant_access(auth_ctx, req.org_id)
 
     async def _event_generator():

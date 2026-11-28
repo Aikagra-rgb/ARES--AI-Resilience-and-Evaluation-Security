@@ -1,3 +1,16 @@
+# ==============================================================================
+# ARES Production Baseline Docker Compose
+#
+# Hardened defaults:
+# - Loopback-only published host ports (terminate TLS via reverse proxy)
+# - Mandatory production secrets via environment variables (:? fail-fast)
+# - Redis-backed multi-instance Blazor sessions & DataProtection keys
+# - Fail-closed runtime gateway & critical HMAC enforcement
+#
+# Optional monitoring profile:
+#   docker compose --profile monitoring up -d
+# ==============================================================================
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -6,7 +19,7 @@ services:
       POSTGRES_USER: ares
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set-POSTGRES_PASSWORD-in-the-environment}
     ports:
-      # Loopback only: the database must not be reachable from the network.
+      # Loopback only: the database must not be reachable from external interfaces.
       - "127.0.0.1:5432:5432"
     volumes:
       - ares_postgres_data:/var/lib/postgresql/data
@@ -16,41 +29,133 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set-REDIS_PASSWORD-in-the-environment}
+    volumes:
+      - ares_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - ares_qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: ./backend
+    networks:
+      default:
+        aliases:
+          - fastapi
     environment:
-      # Production posture. With ENVIRONMENT != development the API refuses to start unless
-      # auth is enabled, ARES_API_KEY is a unique >=24 char secret, header-only identity is off,
-      # and the fingerprint/encryption secrets have been set.
       ENVIRONMENT: ${ENVIRONMENT:-production}
       ARES_AUTH_ENABLED: "true"
       ALLOW_DEV_IDENTITY: "false"
       ARES_API_KEY: ${ARES_API_KEY:?set-ARES_API_KEY-to-a-unique-secret-of-24-plus-chars}
+      ARES_TENANT_API_KEYS: ${ARES_TENANT_API_KEYS:-}
       DATABASE_URL: postgresql+psycopg://ares:${POSTGRES_PASSWORD:?set-POSTGRES_PASSWORD-in-the-environment}@postgres:5432/ares
       AUTO_CREATE_SCHEMA: "false"
-      CORS_ORIGINS: http://localhost:5149,https://localhost:7149
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set-REDIS_PASSWORD-in-the-environment}@redis:6379/0
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ares_attacks}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5149,https://localhost:7149}
       PROMPT_FINGERPRINT_SECRET: ${PROMPT_FINGERPRINT_SECRET:?set-in-backend-env}
       EXECUTION_PAYLOAD_ENCRYPTION_KEY: ${EXECUTION_PAYLOAD_ENCRYPTION_KEY:?set-in-backend-env}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?set-in-backend-env}
+      GATEWAY_CANARY_TOKEN: ${GATEWAY_CANARY_TOKEN:?set-GATEWAY_CANARY_TOKEN-in-env}
+      HMAC_SECRET: ${HMAC_SECRET:?set-HMAC_SECRET-to-a-unique-secret-of-24-plus-chars}
+      HMAC_ENFORCE_MODE: ${HMAC_ENFORCE_MODE:-enforcing_critical}
+      GATEWAY_FAIL_CLOSED_ON_OUTAGE: ${GATEWAY_FAIL_CLOSED_ON_OUTAGE:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
-      QDRANT_URL: ${QDRANT_URL:-}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ares_attacks}
-      # Local embeddings run on the host's Ollama (GPU). Each embedding model has its own Qdrant
-      # collection, so enabling this is only effective after `scripts/reembed_corpus.py` has built
-      # the matching collection; otherwise the gateway reports the vector shield as degraded.
       PREFER_LOCAL_EMBEDDINGS: ${PREFER_LOCAL_EMBEDDINGS:-false}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # Loopback only; put a TLS-terminating reverse proxy in front for anything else.
+      # Loopback only; terminate TLS at a reverse proxy in front.
       - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  web:
+    build: ./src/Ares.Web
+    ports:
+      # Loopback only; terminate TLS at a reverse proxy in front.
+      - "127.0.0.1:5149:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Ares__ApiBaseUrl: http://api:8000
+      Ares__ApiKey: ${ARES_API_KEY:?set-ARES_API_KEY-to-a-unique-secret-of-24-plus-chars}
+      Ares__HmacSecret: ${HMAC_SECRET:?set-HMAC_SECRET-to-a-unique-secret-of-24-plus-chars}
+      Ares__TenantApiKeys: ${ARES_TENANT_API_KEYS:-}
+      Ares__RedisConnection: redis:6379,password=${REDIS_PASSWORD:?set-REDIS_PASSWORD-in-the-environment}
+      Ares__RequireHttpsCookie: ${ARES_REQUIRE_HTTPS_COOKIE:-true}
+      Ares__DisableHttpsRedirection: ${ARES_DISABLE_HTTPS_REDIRECTION:-true}
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["monitoring"]
+    environment:
+      ARES_API_KEY: ${ARES_API_KEY:?set-ARES_API_KEY-to-a-unique-secret-of-24-plus-chars}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$ARES_API_KEY" > /tmp/ares_metrics_token
+        chmod 600 /tmp/ares_metrics_token
+        exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=30d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ares_prometheus_data:/prometheus
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["monitoring"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set-GRAFANA_ADMIN_PASSWORD-in-env}
+    volumes:
+      - ares_grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
 
 volumes:
   ares_postgres_data:
+  ares_redis_data:
+  ares_qdrant_data:
+  ares_prometheus_data:
+  ares_grafana_data:

@@ -8,6 +8,8 @@ production vector indexes (Qdrant) or training corpora.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import logging
 import re
 from datetime import datetime, timezone
@@ -81,6 +83,29 @@ _BENIGN_PATTERNS = [
     r"^what is (?:the capital of|2\s*\+\s*2)[\.!\?]*$",
 ]
 _COMPILED_BENIGN_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _BENIGN_PATTERNS]
+
+
+def _resolve_org_collection(item_metadata: Dict[str, Any]) -> Optional[str]:
+    """Resolve isolated tenant Qdrant collection name `{org_id}_attacks` when org-scoped."""
+    raw_org = item_metadata.get("org_id") or item_metadata.get("organization_id")
+    if not raw_org or str(raw_org).strip() in ("", "default"):
+        return None
+    from ares.training.model_registry import validate_org_id
+
+    safe_org = validate_org_id(str(raw_org).strip())
+    return f"{safe_org}_attacks"
+
+
+def _accepts_kwarg(fn: Any, kwarg_name: str) -> bool:
+    """Inspect whether callable accepts keyword arg cleanly (including mocks with **kwargs)."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.name == kwarg_name or param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
 
 
 class ModerationQueueError(Exception):
@@ -290,18 +315,69 @@ class AttackModerationQueue:
 
         return flags
 
+    def _find_exact_duplicate_id(
+        self,
+        attack_sha256: str,
+        target_org: Optional[str],
+    ) -> Optional[str]:
+        """Detect exact normalized prompt duplicate within the same organization scope."""
+        norm_org = None if not target_org or target_org == "default" else str(target_org).strip()
+        for existing in self._items.values():
+            if existing.status == ModerationStatus.REJECTED:
+                continue
+            ex_meta = existing.metadata or {}
+            ex_org_raw = ex_meta.get("org_id") or ex_meta.get("organization_id")
+            ex_org = None if not ex_org_raw or ex_org_raw == "default" else str(ex_org_raw).strip()
+            if ex_org != norm_org:
+                continue
+            ex_sha = ex_meta.get("attack_sha256") or hashlib.sha256(
+                existing.attack_text.strip().encode("utf-8")
+            ).hexdigest()
+            if ex_sha == attack_sha256:
+                return existing.id
+
+        factory = self._get_session_factory()
+        if factory is None:
+            return None
+        try:
+            from sqlalchemy import select
+            from app.models import ModerationQueueItem
+
+            with factory() as db:
+                stmt = select(ModerationQueueItem).where(
+                    ModerationQueueItem.status != ModerationStatus.REJECTED.value
+                )
+                if norm_org is None:
+                    stmt = stmt.where(ModerationQueueItem.org_id.is_(None))
+                else:
+                    stmt = stmt.where(ModerationQueueItem.org_id == norm_org)
+                stmt = stmt.order_by(ModerationQueueItem.submitted_at.desc()).limit(500)
+                for row in db.scalars(stmt).all():
+                    ex_meta = row.item_metadata or {}
+                    ex_sha = ex_meta.get("attack_sha256") or hashlib.sha256(
+                        str(row.attack_text or "").strip().encode("utf-8")
+                    ).hexdigest()
+                    if ex_sha == attack_sha256:
+                        return str(row.id)
+        except Exception as exc:
+            logger.debug("Exact duplicate DB scan skipped: %s", exc)
+        return None
+
     async def _check_semantic_deduplication(
-        self, attack_text: str
+        self,
+        attack_text: str,
+        collection_name: Optional[str] = None,
     ) -> Tuple[Optional[float], Optional[str]]:
         """Query Qdrant store to detect if an identical or near-duplicate sample exists."""
         if not self.qdrant_store:
             return None, None
 
         try:
-            hits = await self.qdrant_store.search_similar_attacks(
-                query_text=attack_text,
-                limit=1,
-            )
+            search_fn = self.qdrant_store.search_similar_attacks
+            kwargs: Dict[str, Any] = {"query_text": attack_text, "limit": 1}
+            if collection_name and _accepts_kwarg(search_fn, "collection_name"):
+                kwargs["collection_name"] = collection_name
+            hits = await search_fn(**kwargs)
             if hits and len(hits) > 0:
                 top_hit = hits[0]
                 score = float(top_hit.get("score", 0.0))
@@ -328,17 +404,36 @@ class AttackModerationQueue:
     ) -> ModerationItem:
         """
         Submit a candidate attack prompt to the moderation queue.
-        Executes poisoning heuristic checks and semantic deduplication.
+        Executes poisoning heuristic checks, exact hash deduplication, and semantic deduplication.
         """
         if not attack_text or not attack_text.strip():
             raise ValueError("attack_text cannot be empty or whitespace")
 
         meta = dict(metadata or {})
+        attack_sha256 = hashlib.sha256(attack_text.strip().encode("utf-8")).hexdigest()
+        meta.setdefault("attack_sha256", attack_sha256)
+
+        target_org = meta.get("org_id") or meta.get("organization_id")
+        try:
+            collection_name = _resolve_org_collection(meta)
+        except ValueError:
+            collection_name = None
+
         poisoning_flags = self._inspect_poisoning_signals(attack_text, category, severity, meta)
 
-        dedup_score, duplicate_of_id = await self._check_semantic_deduplication(attack_text)
+        exact_dup_id = await asyncio.to_thread(
+            self._find_exact_duplicate_id, attack_sha256, str(target_org) if target_org else None
+        )
+        if exact_dup_id:
+            poisoning_flags.append("exact_duplicate")
+
+        dedup_score, duplicate_of_id = await self._check_semantic_deduplication(
+            attack_text, collection_name=collection_name
+        )
         if duplicate_of_id:
             poisoning_flags.append("semantic_duplicate")
+        if duplicate_of_id is None and exact_dup_id:
+            duplicate_of_id = exact_dup_id
 
         item = ModerationItem(
             attack_text=attack_text,
@@ -409,10 +504,21 @@ class AttackModerationQueue:
         setattr(attempt, "source", item.source)
         setattr(attempt, "tags", ["moderated_corpus", item.category, item.source])
 
-        point_id = await self.qdrant_store.upsert_attempt(
-            attempt=attempt,
-            target_prompt_hash=item.target_prompt_hash,
-        )
+        collection_name: Optional[str] = None
+        try:
+            collection_name = _resolve_org_collection(item.metadata or {})
+        except ValueError as exc:
+            raise ModerationQueueError(str(exc)) from exc
+
+        upsert_fn = self.qdrant_store.upsert_attempt
+        upsert_kwargs: Dict[str, Any] = {
+            "attempt": attempt,
+            "target_prompt_hash": item.target_prompt_hash,
+        }
+        if collection_name and _accepts_kwarg(upsert_fn, "collection_name"):
+            upsert_kwargs["collection_name"] = collection_name
+
+        point_id = await upsert_fn(**upsert_kwargs)
         item.indexed_point_id = point_id
         return point_id
 

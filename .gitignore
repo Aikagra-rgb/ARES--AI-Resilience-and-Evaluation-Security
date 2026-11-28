@@ -71,7 +71,7 @@ pytest-of-*/
 # Qdrant local data
 qdrant_data/
 
-# Reports
+# Reports & generated findings
 *.json
 !**/package.json
 !**/tsconfig.json
@@ -79,12 +79,12 @@ qdrant_data/
 !backend/ares/training/artifacts/evaluation_benchmark_results.json
 !backend/ares/training/artifacts/evaluation_benchmark_results_full.json
 !backend/ares/training/model_registry.json
-!backend/data/redteam_findings.json
+!evaluation/**/*.json
 !monitoring/grafana/provisioning/dashboards/*.json
 
-# Generated ML models & consolidated stats (built deterministically at build/CI time via:
-#   python -m ares.training.client_model_trainer --org=all)
+# Generated ML models, findings & consolidated stats (never tracked in Git)
 backend/models/
+backend/data/redteam_findings*.json
 backend/data/client_models_ml_stats.json
 
 # Docker

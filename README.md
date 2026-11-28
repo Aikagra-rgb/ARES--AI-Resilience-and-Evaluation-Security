@@ -87,15 +87,17 @@ ARES is an enterprise-grade AI security gateway, resilience testing engine, and 
 │   │   ├── llm/                # Multi-provider LLM client (Gemini, Groq, NVIDIA, Ollama)
 │   │   └── observability/      # Prometheus metrics & structured logging
 │   ├── ares_sdk/               # Standalone Python client library
-│   ├── scripts/                # Evaluation & training CLI utilities
-│   ├── tests/                  # 192 automated pytest unit tests
-│   ├── requirements.txt
+│   ├── scripts/                # Evaluation, lockfile, smoke, & training CLI utilities
+│   ├── tests/                  # Automated pytest unit, red-team, & policy suites
+│   ├── requirements.lock       # Canonical pinned dependencies resolved from pyproject.toml
+│   ├── requirements.txt        # -r requirements.lock + dev extras
 │   └── pyproject.toml
+├── evaluation/                 # Unseen holdout corpus, manifest, & redacted security reports
 ├── src/
-│   └── Ares.Web/               # Blazor Interactive Server (.NET 8.0)
+│   └── Ares.Web/               # Blazor Interactive Server (.NET 8.0, Redis multi-instance sessions)
 ├── tests/
-│   └── Ares.Web.Tests/         # 14 .NET xUnit unit tests
-├── docs/                       # Architecture documents, API contracts, threat model
+│   └── Ares.Web.Tests/         # .NET xUnit unit, RBAC, multi-instance & live contract suites
+├── docs/                       # Architecture docs, fail policy, deployment hardening, threat model
 ├── Ares.sln
 └── README.md
 ```
@@ -237,11 +239,14 @@ ARES is engineered to be **fully operational regardless of local GPU availabilit
 Both backend and frontend test suites are fully isolated and executable offline without external API dependencies:
 
 ```bash
-# Run Backend Test Suite (192 tests)
+# Run Backend Test Suite (offline unit & policy suite)
 cd backend
 pytest -m "not integration" -v
 
-# Run Frontend .NET Test Suite (14 tests)
+# Regenerate Redacted Security Benchmark Report
+python scripts/run_security_benchmark.py
+
+# Run Frontend .NET Test Suite (Release)
 dotnet test Ares.sln --configuration Release
 ```
 
@@ -260,8 +265,11 @@ dotnet test Ares.sln --configuration Release
 
 ---
 
-## 📄 Documentation
+## 📄 Documentation & Evaluation Evidence
 
+- [Deployment Hardening & Ops Runbook](docs/DEPLOYMENT_HARDENING.md): Production Compose baseline (`docker-compose.yml`), TLS reverse proxy, backups, migrations, and incident response.
+- [Production Fail Policy](docs/PRODUCTION_FAIL_POLICY.md): Explicit per-endpoint fail-closed/fail-safe behavior and HMAC enforcement modes.
+- [Reproducible Security Evaluation Report](evaluation/reports/SECURITY_EVALUATION_REPORT.md): Redacted holdout & baseline metrics, corpus manifest, and known limitations.
 - [Threat Model](docs/THREAT_MODEL.md): STRIDE threat assessment, trust boundaries, and mitigation controls.
 - [Architecture Decisions](docs/architecture-decisions.md): Detailed ADR logs on data stores and routing policies.
 - [API Contracts](docs/api-contracts.md): FastAPI REST endpoints and request/response specifications.

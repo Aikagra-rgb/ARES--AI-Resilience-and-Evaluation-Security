@@ -41,13 +41,14 @@ def test_alembic_single_head_and_linear_history():
     # 1. Exactly one head
     heads = script.get_heads()
     assert len(heads) == 1, f"Expected single migration head, found multiple: {heads}"
-    assert heads[0] == "20261122_0006"
+    assert heads[0] == "20261124_0007"
 
     # 2. Check linear chain from base to head
     revisions = list(script.walk_revisions(base="base", head=heads[0]))
     rev_ids = [r.revision for r in revisions]
 
     expected_chain = [
+        "20261124_0007",
         "20261122_0006",
         "20261120_0005",
         "20261004_0004",

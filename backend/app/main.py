@@ -149,14 +149,17 @@ app.add_middleware(
     window_seconds=getattr(settings, "rate_limit_window_seconds", 60),
 )
 
+# Production fail policy (see docs/PRODUCTION_FAIL_POLICY.md):
+# - Dev/test defaults to 'permissive' (verifies whenever signature headers are sent)
+# - Staging/production defaults to 'enforcing_critical' (HMAC mandatory on gateway/control routes)
 hmac_verifier = HmacVerifier(
-    default_secret=getattr(settings, "hmac_secret", settings.api_key),
-    max_clock_skew_seconds=getattr(settings, "hmac_max_clock_skew", 300),
+    default_secret=settings.hmac_secret,
+    max_clock_skew_seconds=settings.hmac_max_clock_skew,
 )
 app.add_middleware(
     HmacVerificationMiddleware,
     verifier=hmac_verifier,
-    enforce_mode=getattr(settings, "hmac_enforce_mode", "permissive"),
+    enforce_mode=settings.hmac_enforce_mode or "permissive",
 )
 
 # Unified ARES Vector Security, ML Analytics, Hardening, and Gateway Routers.

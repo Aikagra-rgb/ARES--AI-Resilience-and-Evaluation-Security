@@ -1,0 +1,26 @@
+title = "ARES Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow synthetic red-team/test fixtures and documented placeholder keys only."
+paths = [
+  '''^\.env\.example$''',
+  '''^backend/tests/''',
+  '''^tests/''',
+  '''^evaluation/''',
+  '''^backend/ares/redteam/payloads\.py$''',
+  '''^backend/ares/intent/data/''',
+  '''^backend/ares/training/compression_adapter_trainer\.py$''',
+  '''^backend/ares/training/distilbert_intent_trainer\.py$''',
+  '''^docs/''',
+]
+regexes = [
+  '''ares-dev-secret-key-42''',
+  '''ares-test-[a-z0-9-]+''',
+  '''CANARY_[A-Z0-9_]+''',
+  '''your_[a-z_]+_here''',
+  '''mock-[a-z]+-key''',
+  '''"api_key_hash": "[0-9a-f]{64}"''',
+]
