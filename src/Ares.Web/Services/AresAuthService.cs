@@ -198,15 +198,6 @@ public sealed class AresAuthService
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var section = _config.GetSection("Ares:TenantApiKeys");
-        foreach (var child in section.GetChildren())
-        {
-            if (!string.IsNullOrWhiteSpace(child.Key) && !string.IsNullOrWhiteSpace(child.Value))
-            {
-                result[child.Key.Trim()] = child.Value.Trim();
-            }
-        }
-
         var rawEnv = _config["ARES_TENANT_API_KEYS"] ?? Environment.GetEnvironmentVariable("ARES_TENANT_API_KEYS");
         if (!string.IsNullOrWhiteSpace(rawEnv))
         {
@@ -240,6 +231,16 @@ public sealed class AresAuthService
                             result[k] = v;
                     }
                 }
+            }
+        }
+
+        // Explicit IConfiguration section entries take precedence over ambient env defaults.
+        var section = _config.GetSection("Ares:TenantApiKeys");
+        foreach (var child in section.GetChildren())
+        {
+            if (!string.IsNullOrWhiteSpace(child.Key) && !string.IsNullOrWhiteSpace(child.Value))
+            {
+                result[child.Key.Trim()] = child.Value.Trim();
             }
         }
 

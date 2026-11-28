@@ -31,8 +31,9 @@ RUN test -f data/models/classifier.joblib \
     && test -f ml_vector_analysis_report.json \
     && ENVIRONMENT=test DATABASE_URL=sqlite:///:memory: python -c "import prometheus_client, ares.gateway.enforcer, ares.api.routes.tests, ares.api.routes.clients, ares.api.routes.redteam, ares.api.routes.optimizer, ares.intent.per_client_classifier, ares.vectordb.store, app.dependencies, tests.targets, tests.redteam.attack_generator"
 
-# Run as an unprivileged user.
-RUN useradd --system --uid 10001 --no-create-home ares && chown -R ares:ares /app
+# Run as an unprivileged user after patching base OS security updates.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home ares && chown -R ares:ares /app
 USER ares
 
 EXPOSE 8000

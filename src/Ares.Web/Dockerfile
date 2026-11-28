@@ -10,7 +10,8 @@ RUN dotnet publish Ares.Web.csproj -c Release -o /app/publish /p:UseAppHost=fals
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-RUN mkdir -p /var/lib/ares/keys && chown -R app:app /var/lib/ares/keys
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/ares/keys && chown -R app:app /var/lib/ares/keys
 
 COPY --from=build /app/publish ./
 

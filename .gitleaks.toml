@@ -15,6 +15,7 @@ paths = [
   '''^backend/ares/training/compression_adapter_trainer\.py$''',
   '''^backend/ares/training/distilbert_intent_trainer\.py$''',
   '''^docs/''',
+  '''^backend/scripts/ci_live_smoke_test\.py$''',
 ]
 regexes = [
   '''ares-dev-secret-key-42''',
@@ -23,4 +24,6 @@ regexes = [
   '''your_[a-z_]+_here''',
   '''mock-[a-z]+-key''',
   '''"api_key_hash": "[0-9a-f]{64}"''',
+  '''ci-[a-z0-9-]+''',
+  '''ares_tnt_org_[a-z0-9_]+_ci_[a-z0-9_]+''',
 ]

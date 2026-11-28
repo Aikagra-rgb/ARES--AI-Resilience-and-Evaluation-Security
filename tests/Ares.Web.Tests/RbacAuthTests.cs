@@ -990,4 +990,48 @@ public sealed class RbacAuthTests
 
         Assert.Equal(expectedSig, sig);
     }
+
+    [Fact]
+    public async Task Tenant_key_configuration_section_takes_precedence_over_ambient_env_var()
+    {
+        var priorEnv = Environment.GetEnvironmentVariable("ARES_TENANT_API_KEYS");
+        Environment.SetEnvironmentVariable("ARES_TENANT_API_KEYS", "org_acme_fintech:ambient_env_key_should_not_override");
+        try
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Ares:ApiBaseUrl"] = "http://127.0.0.1:1",
+                    ["Ares:ApiKey"] = "ares-test-admin-key-24-chars",
+                    ["Ares:TenantApiKeys:org_acme_fintech"] = "ares_tnt_org_acme_fintech_config_wins",
+                })
+                .Build();
+
+            var registry = new AresSessionRegistry();
+            using var unreachableHttp = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1/") };
+            var authService = new AresAuthService(config, registry, unreachableHttp);
+
+            var ok = await authService.AuthenticateAsync(new AresLoginRequest(
+                "ops@acme.test",
+                "Ops",
+                "Tenant",
+                "org_acme_fintech",
+                "ares_tnt_org_acme_fintech_config_wins"
+            ));
+            Assert.True(ok.Succeeded);
+
+            var overridden = await authService.AuthenticateAsync(new AresLoginRequest(
+                "ops@acme.test",
+                "Ops",
+                "Tenant",
+                "org_acme_fintech",
+                "ambient_env_key_should_not_override"
+            ));
+            Assert.False(overridden.Succeeded);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ARES_TENANT_API_KEYS", priorEnv);
+        }
+    }
 }

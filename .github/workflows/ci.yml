@@ -177,6 +177,10 @@ jobs:
           pip install -r requirements.lock
           pip install --no-deps -e .
 
+      - name: Generate ephemeral CI encryption key
+        run: |
+          echo "EXECUTION_PAYLOAD_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+
       - name: Run migrations and train reference models
         working-directory: backend
         env:
@@ -188,7 +192,6 @@ jobs:
           HMAC_SECRET: "ci-hmac-signing-secret-24-chars-min"
           HMAC_ENFORCE_MODE: "enforcing_critical"
           PROMPT_FINGERPRINT_SECRET: "ci-fp-secret-24-chars-min"
-          EXECUTION_PAYLOAD_ENCRYPTION_KEY: "Jz7cmIiWycPoeJ4u0Vcg5n_lDrU9pCqQR81hP25wUco="
           GATEWAY_CANARY_TOKEN: "CANARY_CI_SMOKE_TOKEN"
         run: |
           alembic upgrade head
@@ -207,7 +210,6 @@ jobs:
           HMAC_ENFORCE_MODE: "enforcing_critical"
           GATEWAY_FAIL_CLOSED_ON_OUTAGE: "false"
           PROMPT_FINGERPRINT_SECRET: "ci-fp-secret-24-chars-min"
-          EXECUTION_PAYLOAD_ENCRYPTION_KEY: "Jz7cmIiWycPoeJ4u0Vcg5n_lDrU9pCqQR81hP25wUco="
           GATEWAY_CANARY_TOKEN: "CANARY_CI_SMOKE_TOKEN"
           ARES_TENANT_API_KEYS: "org_acme_fintech:ares_tnt_org_acme_fintech_ci_smoke_key"
           ARES_SMOKE_ACME_KEY: "ares_tnt_org_acme_fintech_ci_smoke_key"
@@ -288,7 +290,7 @@ jobs:
           docker build -t ares-web:ci ./src/Ares.Web
 
       - name: Scan ARES Backend image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "ares-api:ci"
           format: "table"
@@ -297,7 +299,7 @@ jobs:
           severity: "CRITICAL,HIGH"
 
       - name: Scan ARES Web image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "ares-web:ci"
           format: "table"

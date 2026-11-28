@@ -51,6 +51,7 @@ public sealed class RedisMultiInstanceTests
                 ["Ares:ApiBaseUrl"] = "http://localhost:8000",
                 ["Ares:ApiKey"] = "ares-master-admin-secret-key",
                 ["Ares:TenantApiKeys:org_acme_fintech"] = "ares_tnt_org_acme_fintech_key01",
+                ["ARES_TENANT_API_KEYS"] = "",
             });
             builder.Services.AddStackExchangeRedisCache(o =>
             {
@@ -155,6 +156,7 @@ public sealed class RedisMultiInstanceTests
                 ["api_key"] = "ares_tnt_org_acme_fintech_key01",
             }));
             Assert.Equal(HttpStatusCode.Redirect, loginResp.StatusCode);
+            Assert.Equal("/", loginResp.Headers.Location?.ToString());
 
             var c2 = new CookieContainer();
             foreach (Cookie cookie in c1.GetCookies(new Uri(url1)))
